@@ -65,7 +65,7 @@ U8G2_SSD1306_72X40_ER_1_HW_I2C u8g2(U8G2_R2, U8X8_PIN_NONE);
 
 #define NUM_CLASSES 3
 
-String myClassLabels[NUM_CLASSES] = {"0Still", "1Walk", "2Shake"};
+String myClassLabels[NUM_CLASSES] = {"0Still", "1Punch", "2Wave"};
 
 const int myTotalItems = NUM_CLASSES + 2;  // classes + Train + Infer
 
