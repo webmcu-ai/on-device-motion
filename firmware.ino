@@ -65,7 +65,7 @@ U8G2_SSD1306_72X40_ER_1_HW_I2C u8g2(U8G2_R2, U8X8_PIN_NONE);
 
 #define NUM_CLASSES 3
 
-String myClassLabels[NUM_CLASSES] = {"0Still", "1Walk", "2Shake"};
+String myClassLabels[NUM_CLASSES] = {"0Still", "1Punch", "2Wave"};
 
 const int myTotalItems = NUM_CLASSES + 2;  // classes + Train + Infer
 
@@ -86,21 +86,36 @@ int   VALIDATION_SAMPLES = 3;   // last N samples per class held out for validat
 // Sampling: ~40 Hz => one sample every 25 ms over ~1 second
 #define SAMPLE_INTERVAL_MS  25
 
-// Dense network: 120 → 32 → 16 → NUM_CLASSES
+// Network: Conv1D → Dense → Output
+//   Conv1D: kernel=5 over IMU_TIMESTEPS, IMU_AXES input channels, CONV1_FILTERS output channels
+//   Applied as: for each output timestep t: sum over kernel positions and input axes
+//   Output timesteps = IMU_TIMESTEPS - CONV1_KERNEL + 1 = 40 - 5 + 1 = 36
+//   After max-pool /2: 18 timesteps × CONV1_FILTERS channels = CONV1_FLAT
+//   Dense1: CONV1_FLAT → DENSE1_SIZE → NUM_CLASSES
+#define CONV1_KERNEL    5
+#define CONV1_FILTERS   8
+#define CONV1_OUT_STEPS (IMU_TIMESTEPS - CONV1_KERNEL + 1)   // 36
+#define POOL1_STEPS     (CONV1_OUT_STEPS / 2)                // 18
+#define CONV1_FLAT      (POOL1_STEPS * CONV1_FILTERS)        // 18 × 8 = 144
+
+// Conv1D weights: kernel × in_channels × out_filters
+#define CONV1_WEIGHTS   (CONV1_KERNEL * IMU_AXES * CONV1_FILTERS)  // 5 × 3 × 8 = 120
+
 #define DENSE1_SIZE   32
 #define DENSE2_SIZE   16
 
-#define DENSE1_WEIGHTS  (INPUT_SIZE  * DENSE1_SIZE)   // 120 × 32 = 3840
+#define DENSE1_WEIGHTS  (CONV1_FLAT  * DENSE1_SIZE)   // 144 × 32 = 4608
 #define DENSE2_WEIGHTS  (DENSE1_SIZE * DENSE2_SIZE)   //  32 × 16 = 512
 #define OUTPUT_WEIGHTS  (DENSE2_SIZE * NUM_CLASSES)   //  16 × NUM_CLASSES
 
 // ======================================================
-// NORMALIZATION CONSTANTS  (per-axis, adjust after data collection)
-// Accelerometer in g-force. Rough defaults: mean ≈ 0, std ≈ 1 g
-// These can be updated from SD config or from a calibration step.
+// NORMALIZATION CONSTANTS (computed at startup by myCalibrate())
+// Defaults used only if calibration is skipped.
+// Z axis default mean=1.0 accounts for gravity when device is flat.
 // ======================================================
-float myAccelMean[IMU_AXES] = { 0.0f,  0.0f,  0.0f };
+float myAccelMean[IMU_AXES] = { 0.0f,  0.0f,  1.0f };
 float myAccelStd [IMU_AXES] = { 1.0f,  1.0f,  1.0f };
+#define CALIB_SAMPLES  80   // ~2 seconds of stationary data at 40 Hz
 
 // ======================================================
 // TOUCH INPUT SYSTEM
@@ -137,7 +152,11 @@ bool          mySDavailable      = false;
 // ======================================================
 float* myInputBuffer = nullptr;   // INPUT_SIZE floats per inference/training step
 
-// Weights
+// Conv1D weights and biases
+float* myConv1_w = nullptr;       // CONV1_WEIGHTS = kernel × axes × filters
+float* myConv1_b = nullptr;       // CONV1_FILTERS
+
+// Dense weights and biases
 float* myDense1_w = nullptr;
 float* myDense1_b = nullptr;
 float* myDense2_w = nullptr;
@@ -146,6 +165,8 @@ float* myOutput_w = nullptr;
 float* myOutput_b = nullptr;
 
 // Gradients
+float* myConv1_w_grad  = nullptr;
+float* myConv1_b_grad  = nullptr;
 float* myDense1_w_grad = nullptr;
 float* myDense1_b_grad = nullptr;
 float* myDense2_w_grad = nullptr;
@@ -154,6 +175,8 @@ float* myOutput_w_grad = nullptr;
 float* myOutput_b_grad = nullptr;
 
 // Adam optimizer momentum buffers
+float* myConv1_w_m  = nullptr;  float* myConv1_w_v  = nullptr;
+float* myConv1_b_m  = nullptr;  float* myConv1_b_v  = nullptr;
 float* myDense1_w_m = nullptr;  float* myDense1_w_v = nullptr;
 float* myDense1_b_m = nullptr;  float* myDense1_b_v = nullptr;
 float* myDense2_w_m = nullptr;  float* myDense2_w_v = nullptr;
@@ -162,14 +185,18 @@ float* myOutput_w_m = nullptr;  float* myOutput_w_v = nullptr;
 float* myOutput_b_m = nullptr;  float* myOutput_b_v = nullptr;
 
 // Forward-pass activation buffers
+float* myConv1_output  = nullptr;   // CONV1_OUT_STEPS × CONV1_FILTERS (pre-pool)
+float* myPool1_output  = nullptr;   // POOL1_STEPS     × CONV1_FILTERS = CONV1_FLAT (post-pool)
 float* myDense1_output = nullptr;   // DENSE1_SIZE
 float* myDense2_output = nullptr;   // DENSE2_SIZE
 float* myFinal_output  = nullptr;   // NUM_CLASSES  (softmax probabilities)
 
 // Backward-pass delta buffers
-float* myOutput_delta  = nullptr;   // NUM_CLASSES
-float* myDense2_delta  = nullptr;   // DENSE2_SIZE
-float* myDense1_delta  = nullptr;   // DENSE1_SIZE
+float* myOutput_delta = nullptr;   // NUM_CLASSES
+float* myDense2_delta = nullptr;   // DENSE2_SIZE
+float* myDense1_delta = nullptr;   // DENSE1_SIZE
+float* myPool1_delta  = nullptr;   // CONV1_FLAT
+float* myConv1_delta  = nullptr;   // CONV1_OUT_STEPS × CONV1_FILTERS
 
 // Adam step counter
 int myAdamStep = 0;
@@ -285,15 +312,23 @@ void myAllocateMemory() {
   if (myInputBuffer != nullptr) return;
   Serial.println("\n=== Allocating Memory ===");
 
-  myInputBuffer   = (float*)ps_malloc(INPUT_SIZE  * sizeof(float));
+  myInputBuffer  = (float*)ps_malloc(INPUT_SIZE     * sizeof(float));
 
-  myDense1_w      = (float*)ps_malloc(DENSE1_WEIGHTS * sizeof(float));
-  myDense1_b      = (float*)ps_malloc(DENSE1_SIZE    * sizeof(float));
-  myDense2_w      = (float*)ps_malloc(DENSE2_WEIGHTS * sizeof(float));
-  myDense2_b      = (float*)ps_malloc(DENSE2_SIZE    * sizeof(float));
-  myOutput_w      = (float*)ps_malloc(OUTPUT_WEIGHTS * sizeof(float));
-  myOutput_b      = (float*)ps_malloc(NUM_CLASSES    * sizeof(float));
+  // Conv1D
+  myConv1_w      = (float*)ps_malloc(CONV1_WEIGHTS  * sizeof(float));
+  myConv1_b      = (float*)ps_malloc(CONV1_FILTERS  * sizeof(float));
 
+  // Dense
+  myDense1_w     = (float*)ps_malloc(DENSE1_WEIGHTS * sizeof(float));
+  myDense1_b     = (float*)ps_malloc(DENSE1_SIZE    * sizeof(float));
+  myDense2_w     = (float*)ps_malloc(DENSE2_WEIGHTS * sizeof(float));
+  myDense2_b     = (float*)ps_malloc(DENSE2_SIZE    * sizeof(float));
+  myOutput_w     = (float*)ps_malloc(OUTPUT_WEIGHTS * sizeof(float));
+  myOutput_b     = (float*)ps_malloc(NUM_CLASSES    * sizeof(float));
+
+  // Gradients
+  myConv1_w_grad  = (float*)ps_malloc(CONV1_WEIGHTS  * sizeof(float));
+  myConv1_b_grad  = (float*)ps_malloc(CONV1_FILTERS  * sizeof(float));
   myDense1_w_grad = (float*)ps_malloc(DENSE1_WEIGHTS * sizeof(float));
   myDense1_b_grad = (float*)ps_malloc(DENSE1_SIZE    * sizeof(float));
   myDense2_w_grad = (float*)ps_malloc(DENSE2_WEIGHTS * sizeof(float));
@@ -301,6 +336,11 @@ void myAllocateMemory() {
   myOutput_w_grad = (float*)ps_malloc(OUTPUT_WEIGHTS * sizeof(float));
   myOutput_b_grad = (float*)ps_malloc(NUM_CLASSES    * sizeof(float));
 
+  // Adam buffers (zero-initialised)
+  myConv1_w_m  = (float*)ps_calloc(CONV1_WEIGHTS,  sizeof(float));
+  myConv1_w_v  = (float*)ps_calloc(CONV1_WEIGHTS,  sizeof(float));
+  myConv1_b_m  = (float*)ps_calloc(CONV1_FILTERS,  sizeof(float));
+  myConv1_b_v  = (float*)ps_calloc(CONV1_FILTERS,  sizeof(float));
   myDense1_w_m = (float*)ps_calloc(DENSE1_WEIGHTS, sizeof(float));
   myDense1_w_v = (float*)ps_calloc(DENSE1_WEIGHTS, sizeof(float));
   myDense1_b_m = (float*)ps_calloc(DENSE1_SIZE,    sizeof(float));
@@ -314,16 +354,22 @@ void myAllocateMemory() {
   myOutput_b_m = (float*)ps_calloc(NUM_CLASSES,     sizeof(float));
   myOutput_b_v = (float*)ps_calloc(NUM_CLASSES,     sizeof(float));
 
-  myDense1_output = (float*)ps_malloc(DENSE1_SIZE  * sizeof(float));
-  myDense2_output = (float*)ps_malloc(DENSE2_SIZE  * sizeof(float));
-  myFinal_output  = (float*)ps_malloc(NUM_CLASSES  * sizeof(float));
+  // Forward-pass buffers
+  myConv1_output  = (float*)ps_malloc(CONV1_OUT_STEPS * CONV1_FILTERS * sizeof(float));
+  myPool1_output  = (float*)ps_malloc(CONV1_FLAT       * sizeof(float));
+  myDense1_output = (float*)ps_malloc(DENSE1_SIZE      * sizeof(float));
+  myDense2_output = (float*)ps_malloc(DENSE2_SIZE      * sizeof(float));
+  myFinal_output  = (float*)ps_malloc(NUM_CLASSES      * sizeof(float));
 
-  myOutput_delta  = (float*)ps_malloc(NUM_CLASSES  * sizeof(float));
-  myDense2_delta  = (float*)ps_malloc(DENSE2_SIZE  * sizeof(float));
-  myDense1_delta  = (float*)ps_malloc(DENSE1_SIZE  * sizeof(float));
+  // Backward-pass buffers
+  myOutput_delta = (float*)ps_malloc(NUM_CLASSES                      * sizeof(float));
+  myDense2_delta = (float*)ps_malloc(DENSE2_SIZE                      * sizeof(float));
+  myDense1_delta = (float*)ps_malloc(DENSE1_SIZE                      * sizeof(float));
+  myPool1_delta  = (float*)ps_malloc(CONV1_FLAT                       * sizeof(float));
+  myConv1_delta  = (float*)ps_malloc(CONV1_OUT_STEPS * CONV1_FILTERS  * sizeof(float));
 
-  if (!myInputBuffer || !myDense1_w || !myDense2_w || !myOutput_w ||
-      !myDense1_output || !myDense2_output || !myFinal_output) {
+  if (!myInputBuffer || !myConv1_w || !myDense1_w || !myDense2_w || !myOutput_w ||
+      !myConv1_output || !myPool1_output || !myDense1_output || !myFinal_output) {
     Serial.println("FATAL: PSRAM allocation failed!");
     u8g2.firstPage();
     do { u8g2.drawStr(0, 15, "PSRAM ERROR!"); } while (u8g2.nextPage());
@@ -333,7 +379,14 @@ void myAllocateMemory() {
   Serial.printf("Free PSRAM after allocation: %d bytes\n", ESP.getFreePsram());
 
   // He initialization
-  float d1std = sqrt(2.0f / INPUT_SIZE);
+  // Conv1D: fan-in = kernel × axes
+  float c1std = sqrt(2.0f / (CONV1_KERNEL * IMU_AXES));
+  for (int i = 0; i < CONV1_WEIGHTS; i++)
+    myConv1_w[i] = ((float)rand() / RAND_MAX - 0.5f) * 2.0f * c1std;
+  for (int i = 0; i < CONV1_FILTERS; i++) myConv1_b[i] = 0;
+
+  // Dense1: fan-in = CONV1_FLAT
+  float d1std = sqrt(2.0f / CONV1_FLAT);
   for (int i = 0; i < DENSE1_WEIGHTS; i++)
     myDense1_w[i] = ((float)rand() / RAND_MAX - 0.5f) * 2.0f * d1std;
   for (int i = 0; i < DENSE1_SIZE; i++) myDense1_b[i] = 0;
@@ -378,6 +431,8 @@ void myExportHeader() {
     }
     file.println(" };");
   };
+  myDump("myModel_conv1_w",  myConv1_w,  CONV1_WEIGHTS);
+  myDump("myModel_conv1_b",  myConv1_b,  CONV1_FILTERS);
   myDump("myModel_dense1_w", myDense1_w, DENSE1_WEIGHTS);
   myDump("myModel_dense1_b", myDense1_b, DENSE1_SIZE);
   myDump("myModel_dense2_w", myDense2_w, DENSE2_WEIGHTS);
@@ -395,6 +450,8 @@ bool myLoadWeights() {
   Serial.println("Loading weights from SD...");
   File f = SD.open("/header/myMotionWeights.bin", FILE_READ);
   if (!f) return false;
+  f.read((uint8_t*)myConv1_w,  CONV1_WEIGHTS  * 4);
+  f.read((uint8_t*)myConv1_b,  CONV1_FILTERS  * 4);
   f.read((uint8_t*)myDense1_w, DENSE1_WEIGHTS * 4);
   f.read((uint8_t*)myDense1_b, DENSE1_SIZE    * 4);
   f.read((uint8_t*)myDense2_w, DENSE2_WEIGHTS * 4);
@@ -412,6 +469,8 @@ void mySaveWeights() {
   if (!SD.exists("/header")) SD.mkdir("/header");
   File f = SD.open("/header/myMotionWeights.bin", FILE_WRITE);
   if (f) {
+    f.write((uint8_t*)myConv1_w,  CONV1_WEIGHTS  * 4);
+    f.write((uint8_t*)myConv1_b,  CONV1_FILTERS  * 4);
     f.write((uint8_t*)myDense1_w, DENSE1_WEIGHTS * 4);
     f.write((uint8_t*)myDense1_b, DENSE1_SIZE    * 4);
     f.write((uint8_t*)myDense2_w, DENSE2_WEIGHTS * 4);
@@ -422,6 +481,71 @@ void mySaveWeights() {
     Serial.println("Weights saved to SD");
   }
   myExportHeader();
+}
+
+// ======================================================
+// CALIBRATION  (run once at startup, device stationary)
+// Collects CALIB_SAMPLES readings and computes per-axis mean and std.
+// Saves result to SD so subsequent boots skip the wait.
+// ======================================================
+void myCalibrate() {
+  // Try loading from SD first
+  if (mySDavailable && SD.exists("/header/myCalib.bin")) {
+    File f = SD.open("/header/myCalib.bin", FILE_READ);
+    if (f && f.size() == IMU_AXES * 2 * 4) {
+      f.read((uint8_t*)myAccelMean, IMU_AXES * 4);
+      f.read((uint8_t*)myAccelStd,  IMU_AXES * 4);
+      f.close();
+      Serial.printf("Calibration loaded: mean=%.3f,%.3f,%.3f  std=%.3f,%.3f,%.3f\n",
+                    myAccelMean[0], myAccelMean[1], myAccelMean[2],
+                    myAccelStd[0],  myAccelStd[1],  myAccelStd[2]);
+      return;
+    }
+    if (f) f.close();
+  }
+
+  Serial.println("Calibrating IMU - keep device stationary...");
+  u8g2.firstPage();
+  do {
+    u8g2.setFont(u8g2_font_5x7_tf);
+    u8g2.drawStr(0, 10, "Calibrating...");
+    u8g2.drawStr(0, 22, "Keep still!");
+  } while (u8g2.nextPage());
+  delay(500);
+
+  float sum[IMU_AXES]  = {0, 0, 0};
+  float sum2[IMU_AXES] = {0, 0, 0};
+
+  for (int i = 0; i < CALIB_SAMPLES; i++) {
+    float v[IMU_AXES];
+    v[0] = myIMU.readFloatAccelX();
+    v[1] = myIMU.readFloatAccelY();
+    v[2] = myIMU.readFloatAccelZ();
+    for (int a = 0; a < IMU_AXES; a++) { sum[a] += v[a]; sum2[a] += v[a] * v[a]; }
+    delay(SAMPLE_INTERVAL_MS);
+  }
+
+  for (int a = 0; a < IMU_AXES; a++) {
+    myAccelMean[a] = sum[a] / CALIB_SAMPLES;
+    float var = (sum2[a] / CALIB_SAMPLES) - (myAccelMean[a] * myAccelMean[a]);
+    myAccelStd[a]  = max(sqrt(var), 0.01f);   // floor at 0.01 to avoid div/0
+  }
+
+  Serial.printf("Calibration done: mean=%.3f,%.3f,%.3f  std=%.3f,%.3f,%.3f\n",
+                myAccelMean[0], myAccelMean[1], myAccelMean[2],
+                myAccelStd[0],  myAccelStd[1],  myAccelStd[2]);
+
+  // Save to SD for next boot
+  if (mySDavailable) {
+    if (!SD.exists("/header")) SD.mkdir("/header");
+    File f = SD.open("/header/myCalib.bin", FILE_WRITE);
+    if (f) {
+      f.write((uint8_t*)myAccelMean, IMU_AXES * 4);
+      f.write((uint8_t*)myAccelStd,  IMU_AXES * 4);
+      f.close();
+      Serial.println("Calibration saved to SD");
+    }
+  }
 }
 
 // ======================================================
@@ -475,10 +599,13 @@ void setup() {
     while (1) { delay(1000); }
   }
   Serial.println("IMU initialized successfully");
+  myCalibrate();
 
   myAllocateMemory();
 
 #ifdef USE_BAKED_WEIGHTS
+  memcpy(myConv1_w,  myModel_conv1_w,  CONV1_WEIGHTS  * sizeof(float));
+  memcpy(myConv1_b,  myModel_conv1_b,  CONV1_FILTERS  * sizeof(float));
   memcpy(myDense1_w, myModel_dense1_w, DENSE1_WEIGHTS * sizeof(float));
   memcpy(myDense1_b, myModel_dense1_b, DENSE1_SIZE    * sizeof(float));
   memcpy(myDense2_w, myModel_dense2_w, DENSE2_WEIGHTS * sizeof(float));
@@ -647,6 +774,35 @@ void myActionCollect(int classIdx) {
 // ██████████████████████████████████████████████████████████████████████████████
 
 
+// Conv1D forward pass
+// Input layout: [t0_ax, t0_ay, t0_az, t1_ax, ...]  (IMU_TIMESTEPS × IMU_AXES)
+// Weight layout: [k × in_axis × out_filter]  index = (k*IMU_AXES + a)*CONV1_FILTERS + f
+// Output layout: [step × filter]  index = step*CONV1_FILTERS + f
+void myConv1DForward(float* input) {
+  for (int s = 0; s < CONV1_OUT_STEPS; s++) {
+    for (int f = 0; f < CONV1_FILTERS; f++) {
+      float sum = myConv1_b[f];
+      for (int k = 0; k < CONV1_KERNEL; k++) {
+        for (int a = 0; a < IMU_AXES; a++) {
+          sum += input[(s + k) * IMU_AXES + a] * myConv1_w[(k * IMU_AXES + a) * CONV1_FILTERS + f];
+        }
+      }
+      myConv1_output[s * CONV1_FILTERS + f] = myLeakyRelu(sum);
+    }
+  }
+}
+
+// Max-pool /2 along the time axis, per filter
+void myPool1Forward() {
+  for (int s = 0; s < POOL1_STEPS; s++) {
+    for (int f = 0; f < CONV1_FILTERS; f++) {
+      float a = myConv1_output[(s * 2)     * CONV1_FILTERS + f];
+      float b = myConv1_output[(s * 2 + 1) * CONV1_FILTERS + f];
+      myPool1_output[s * CONV1_FILTERS + f] = max(a, b);
+    }
+  }
+}
+
 // Dense layer forward: output[j] = leaky_relu( sum_i(w[i*outSize+j] * input[i]) + b[j] )
 void myDenseForward(float* input, int inSize,
                     float* w, float* b,
@@ -659,9 +815,11 @@ void myDenseForward(float* input, int inSize,
   }
 }
 
-// Full forward pass: fills myDense1_output, myDense2_output, myFinal_output (softmax)
+// Full forward pass: Conv1D → Pool → Dense1 → Dense2 → Output(softmax)
 void myForwardPass(float* input) {
-  myDenseForward(input,          INPUT_SIZE,  myDense1_w, myDense1_b, myDense1_output, DENSE1_SIZE, true);
+  myConv1DForward(input);
+  myPool1Forward();
+  myDenseForward(myPool1_output, CONV1_FLAT,  myDense1_w, myDense1_b, myDense1_output, DENSE1_SIZE, true);
   myDenseForward(myDense1_output, DENSE1_SIZE, myDense2_w, myDense2_b, myDense2_output, DENSE2_SIZE, true);
   myDenseForward(myDense2_output, DENSE2_SIZE, myOutput_w, myOutput_b, myFinal_output,  NUM_CLASSES, false);
   mySoftmax(myFinal_output, NUM_CLASSES);
@@ -690,6 +848,8 @@ void myAdamUpdate(float* w, float* grad, float* m, float* v, int size, float lr)
 
 // Zero all gradient buffers
 void myZeroGradients() {
+  memset(myConv1_w_grad,  0, CONV1_WEIGHTS  * sizeof(float));
+  memset(myConv1_b_grad,  0, CONV1_FILTERS  * sizeof(float));
   memset(myDense1_w_grad, 0, DENSE1_WEIGHTS * sizeof(float));
   memset(myDense1_b_grad, 0, DENSE1_SIZE    * sizeof(float));
   memset(myDense2_w_grad, 0, DENSE2_WEIGHTS * sizeof(float));
@@ -698,45 +858,68 @@ void myZeroGradients() {
   memset(myOutput_b_grad, 0, NUM_CLASSES    * sizeof(float));
 }
 
-// Backward pass for one sample, accumulates gradients
+// Backward pass for one sample, accumulates gradients into all layers
 void myBackwardPass(float* input, int label) {
-  // Output layer delta: softmax + cross-entropy combined derivative
+  // --- Output layer: softmax + cross-entropy combined ---
   for (int j = 0; j < NUM_CLASSES; j++)
     myOutput_delta[j] = myFinal_output[j] - (j == label ? 1.0f : 0.0f);
 
-  // Accumulate output layer gradients
-  for (int i = 0; i < DENSE2_SIZE; i++) {
-    for (int j = 0; j < NUM_CLASSES; j++) {
+  for (int i = 0; i < DENSE2_SIZE; i++)
+    for (int j = 0; j < NUM_CLASSES; j++)
       myOutput_w_grad[i * NUM_CLASSES + j] += myDense2_output[i] * myOutput_delta[j];
-    }
-  }
   for (int j = 0; j < NUM_CLASSES; j++) myOutput_b_grad[j] += myOutput_delta[j];
 
-  // Dense2 delta
+  // --- Dense2 ---
   for (int i = 0; i < DENSE2_SIZE; i++) {
     float sum = 0;
     for (int j = 0; j < NUM_CLASSES; j++) sum += myOutput_w[i * NUM_CLASSES + j] * myOutput_delta[j];
     myDense2_delta[i] = sum * myLeakyReluDeriv(myDense2_output[i]);
   }
-  for (int i = 0; i < DENSE1_SIZE; i++) {
-    for (int j = 0; j < DENSE2_SIZE; j++) {
+  for (int i = 0; i < DENSE1_SIZE; i++)
+    for (int j = 0; j < DENSE2_SIZE; j++)
       myDense2_w_grad[i * DENSE2_SIZE + j] += myDense1_output[i] * myDense2_delta[j];
-    }
-  }
   for (int j = 0; j < DENSE2_SIZE; j++) myDense2_b_grad[j] += myDense2_delta[j];
 
-  // Dense1 delta
+  // --- Dense1 ---
   for (int i = 0; i < DENSE1_SIZE; i++) {
     float sum = 0;
     for (int j = 0; j < DENSE2_SIZE; j++) sum += myDense2_w[i * DENSE2_SIZE + j] * myDense2_delta[j];
     myDense1_delta[i] = sum * myLeakyReluDeriv(myDense1_output[i]);
   }
-  for (int i = 0; i < INPUT_SIZE; i++) {
-    for (int j = 0; j < DENSE1_SIZE; j++) {
-      myDense1_w_grad[i * DENSE1_SIZE + j] += input[i] * myDense1_delta[j];
+  for (int i = 0; i < CONV1_FLAT; i++)
+    for (int j = 0; j < DENSE1_SIZE; j++)
+      myDense1_w_grad[i * DENSE1_SIZE + j] += myPool1_output[i] * myDense1_delta[j];
+  for (int j = 0; j < DENSE1_SIZE; j++) myDense1_b_grad[j] += myDense1_delta[j];
+
+  // --- Max-pool backward: route gradient to whichever input was the max ---
+  for (int s = 0; s < POOL1_STEPS; s++) {
+    for (int f = 0; f < CONV1_FILTERS; f++) {
+      float grad = 0;
+      for (int j = 0; j < DENSE1_SIZE; j++)
+        grad += myDense1_w[((s * CONV1_FILTERS + f)) * DENSE1_SIZE + j] * myDense1_delta[j];
+      myPool1_delta[s * CONV1_FILTERS + f] = grad;
+
+      float a = myConv1_output[(s * 2)     * CONV1_FILTERS + f];
+      float b = myConv1_output[(s * 2 + 1) * CONV1_FILTERS + f];
+      myConv1_delta[(s * 2)     * CONV1_FILTERS + f] = (a >= b) ? grad : 0.0f;
+      myConv1_delta[(s * 2 + 1) * CONV1_FILTERS + f] = (b >  a) ? grad : 0.0f;
     }
   }
-  for (int j = 0; j < DENSE1_SIZE; j++) myDense1_b_grad[j] += myDense1_delta[j];
+
+  // --- Conv1D backward ---
+  for (int s = 0; s < CONV1_OUT_STEPS; s++) {
+    for (int f = 0; f < CONV1_FILTERS; f++) {
+      float delta = myConv1_delta[s * CONV1_FILTERS + f]
+                    * myLeakyReluDeriv(myConv1_output[s * CONV1_FILTERS + f]);
+      myConv1_b_grad[f] += delta;
+      for (int k = 0; k < CONV1_KERNEL; k++) {
+        for (int a = 0; a < IMU_AXES; a++) {
+          myConv1_w_grad[(k * IMU_AXES + a) * CONV1_FILTERS + f] +=
+            input[(s + k) * IMU_AXES + a] * delta;
+        }
+      }
+    }
+  }
 }
 
 // Load one .csv sample from SD into buf (INPUT_SIZE floats) then normalize
@@ -838,6 +1021,8 @@ void myActionTrain() {
       // Apply gradients at end of each mini-batch
       if ((si + 1) % BATCH_SIZE == 0 || si == (int)myTrainingData.size() - 1) {
         float scale = 1.0f / processed;
+        for (int k = 0; k < CONV1_WEIGHTS;  k++) myConv1_w_grad[k]  *= scale;
+        for (int k = 0; k < CONV1_FILTERS;  k++) myConv1_b_grad[k]  *= scale;
         for (int k = 0; k < DENSE1_WEIGHTS; k++) myDense1_w_grad[k] *= scale;
         for (int k = 0; k < DENSE1_SIZE;    k++) myDense1_b_grad[k] *= scale;
         for (int k = 0; k < DENSE2_WEIGHTS; k++) myDense2_w_grad[k] *= scale;
@@ -845,6 +1030,8 @@ void myActionTrain() {
         for (int k = 0; k < OUTPUT_WEIGHTS; k++) myOutput_w_grad[k] *= scale;
         for (int k = 0; k < NUM_CLASSES;    k++) myOutput_b_grad[k] *= scale;
 
+        myAdamUpdate(myConv1_w,  myConv1_w_grad,  myConv1_w_m,  myConv1_w_v,  CONV1_WEIGHTS,  LEARNING_RATE);
+        myAdamUpdate(myConv1_b,  myConv1_b_grad,  myConv1_b_m,  myConv1_b_v,  CONV1_FILTERS,  LEARNING_RATE);
         myAdamUpdate(myDense1_w, myDense1_w_grad, myDense1_w_m, myDense1_w_v, DENSE1_WEIGHTS, LEARNING_RATE);
         myAdamUpdate(myDense1_b, myDense1_b_grad, myDense1_b_m, myDense1_b_v, DENSE1_SIZE,    LEARNING_RATE);
         myAdamUpdate(myDense2_w, myDense2_w_grad, myDense2_w_m, myDense2_w_v, DENSE2_WEIGHTS, LEARNING_RATE);
@@ -922,19 +1109,20 @@ void myActionInfer() {
   }
 
   Serial.println("\n>>> Inference mode (tap A0 or 'l' to exit)");
+  Serial.println("Majority vote over 3 consecutive windows.");
 
   float myLiveBuf[INPUT_SIZE];
-  int   pred          = 0;
-  int   windowCount   = 0;
+  int   windowCount  = 0;
+  int   voteBuf[3]   = {0, 0, 0};   // rolling window of last 3 predictions
+  int   voteIdx      = 0;
+  int   finalPred    = 0;
 
   while (true) {
-    unsigned long tWin = millis();
-
     // Check exit
     if (myCheckTouchInput() == 2) { myResetMenuState(); return; }
     if (Serial.available()) { char c = Serial.read(); if (c == 'l' || c == 'L') { myResetMenuState(); return; } }
 
-    // Capture one window
+    // Capture one 1-second window
     for (int t = 0; t < IMU_TIMESTEPS; t++) {
       unsigned long tS = millis();
       myLiveBuf[t * IMU_AXES + 0] = myIMU.readFloatAccelX();
@@ -947,23 +1135,34 @@ void myActionInfer() {
     myNormalizeInput(myLiveBuf);
     myForwardPass(myLiveBuf);
 
-    pred = 0;
-    for (int j = 1; j < NUM_CLASSES; j++) if (myFinal_output[j] > myFinal_output[pred]) pred = j;
+    // Argmax for this window
+    int rawPred = 0;
+    for (int j = 1; j < NUM_CLASSES; j++) if (myFinal_output[j] > myFinal_output[rawPred]) rawPred = j;
     windowCount++;
 
-    Serial.printf("Window %d: %s (%.1f%%) | All:",
-                  windowCount, myClassLabels[pred].c_str(), myFinal_output[pred] * 100);
+    // Store in rolling vote buffer
+    voteBuf[voteIdx % 3] = rawPred;
+    voteIdx++;
+
+    // Majority vote over last 3 windows
+    int votes[NUM_CLASSES] = {};
+    for (int v = 0; v < 3; v++) votes[voteBuf[v]]++;
+    finalPred = 0;
+    for (int j = 1; j < NUM_CLASSES; j++) if (votes[j] > votes[finalPred]) finalPred = j;
+
+    Serial.printf("Win %d raw=%s | vote=%s | All:",
+                  windowCount, myClassLabels[rawPred].c_str(), myClassLabels[finalPred].c_str());
     for (int j = 0; j < NUM_CLASSES; j++) Serial.printf(" %.0f%%", myFinal_output[j] * 100);
     Serial.println();
 
-    // OLED result
+    // OLED: show voted result and raw confidence
     u8g2.firstPage();
     do {
       u8g2.setFont(u8g2_font_5x7_tf);
-      u8g2.drawStr(0, 8, "Motion:");
-      u8g2.drawStr(0, 18, myClassLabels[pred].c_str());
+      u8g2.drawStr(0, 8,  "Motion:");
+      u8g2.drawStr(0, 18, myClassLabels[finalPred].c_str());
       char buf[20];
-      snprintf(buf, sizeof(buf), "%.0f%%  #%d", myFinal_output[pred] * 100, windowCount);
+      snprintf(buf, sizeof(buf), "raw %.0f%% #%d", myFinal_output[rawPred] * 100, windowCount);
       u8g2.drawStr(0, 28, buf);
     } while (u8g2.nextPage());
   }
