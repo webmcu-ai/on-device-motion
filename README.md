@@ -1,5 +1,5 @@
 # on-device-motion
-on-device-motion
+on-device-motion. This is the least stable of the models. The cell phone version seems the best.
 
 
 live webpage, great with a cell phone at 
