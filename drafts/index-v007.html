@@ -1,0 +1,1694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XIAO Motion ML - v007</title>
+<style>
+:root{color-scheme:light dark}
+body{font-family:system-ui,sans-serif;max-width:800px;margin:0 auto;padding:8px}
+input[type=button]{font:inherit;min-height:44px;padding:0 14px;margin:3px}
+input[type=text],input[type=number],select{font:inherit;min-height:34px}
+canvas{border:1px solid gray;max-width:100%}
+.myPanel{border:2px solid gray;padding:8px;margin-top:10px}
+.myMsg{font-weight:bold;min-height:1.4em}
+</style>
+</head>
+<body>
+
+<h1>XIAO Motion ML</h1>
+<p>Train a motion model on the desktop or phone, then run it on the XIAO. Pick how the data gets to this page: SD card, Bluetooth (BLE) or USB serial.</p>
+
+<table style="width:100%;text-align:center">
+<tr>
+<td><input type="button" id="myBtnSd" value="DESKTOP SD" style="width:100%" onclick="myShow('Sd')"><br>SD card in the computer</td>
+<td><input type="button" id="myBtnBle" value="DESKTOP BLE" style="width:100%" onclick="myShow('Ble')"><br>Bluetooth to the XIAO</td>
+<td><input type="button" id="myBtnSer" value="DESKTOP SERIAL" style="width:100%" onclick="myShow('Ser')"><br>USB cable + monitor</td>
+<td><input type="button" id="myBtnPhone" value="PHONE" style="width:100%" onclick="myShow('Phone')"><br>Phone sensor, BLE</td>
+</tr>
+</table>
+
+
+<!-- ============================ SHARED: XIAO CONNECTION (moved into the BLE, SERIAL and PHONE tabs by myShow) ============================ -->
+<div id="myPanelLink" hidden>
+<h3>XIAO connection</h3>
+<div id="myConnBle"><input type="button" value="Connect BLE" onclick="myConnectBle()"></div>
+<div id="myConnSer"><input type="button" value="Connect Serial" onclick="myConnectSerial()"></div>
+<input type="button" value="Disconnect" onclick="myDisconnect()">
+<input type="button" value="Refresh status" onclick="myRefreshStatus()">
+<pre id="myDevStatus">not connected</pre>
+<div id="myModelBox" style="margin:8px 0"></div>
+<input type="button" value="Load samples from XIAO" onclick="myPullSamples()">
+<input type="button" value="Get model from XIAO" onclick="myGetModel()">
+<p id="myXferInfo"></p>
+</div>
+
+<!-- ============================ SHARED: SEND TO THE XIAO, TRAIN AND RUN ON IT ============================ -->
+<div id="myPanelSend" hidden>
+<h3>Send to the XIAO, train and run on it</h3>
+<input type="button" value="Send new samples to XIAO" onclick="myPushSamples()">
+<input type="button" value="Send model to XIAO" onclick="mySendModel()"><br>
+<input type="button" value="Train on XIAO" onclick="myTrainXiao()">
+<input type="button" value="Stop XIAO training" onclick="myStopXiao()">
+<input type="button" id="myBtnRunXiao" value="Run on XIAO" onclick="myToggleRunXiao()">
+<p><b id="myResBanner">no XIAO result yet</b></p>
+<div id="myResBars"></div>
+<p>On the XIAO: sensor &rarr; XIAO &rarr; neural network &rarr; prediction. No computer needed once the model is there.</p>
+</div>
+
+<!-- ============================ SHARED: REVIEW, TRAIN, ANALYZE (moved into the SD, BLE and SERIAL tabs) ============================ -->
+<div id="myWork" hidden>
+<h3>Review data</h3>
+<pre id="myClassList"></pre>
+Class: <select id="myRevClass" onchange="myRevPos=0;myDrawReview()"></select>
+<input type="button" value="&larr;" onclick="myRevStep(-1)">
+<input type="button" value="&rarr;" onclick="myRevStep(1)">
+<span id="myRevInfo"></span><br>
+<canvas id="myCvRev" width="480" height="140"></canvas><br>
+<canvas id="myCvRevM" width="320" height="24"></canvas> <small>what the network sees</small>
+<p id="myRevPred"></p>
+
+<h3>Train</h3>
+<input type="button" value="Train" onclick="myTrain()">
+<input type="button" value="Stop" onclick="myStopTrain()">
+<p id="myTrainSd">not trained yet</p>
+<canvas id="myCvLossSd" width="480" height="120"></canvas>
+
+<h3>Analyze</h3>
+<input type="button" value="Analyze" onclick="myAnalyze()">
+Test on: <select id="myEvalSet" onchange="myAnalyze()"><option value="val">validation samples</option><option value="all">all samples (finds bad labels)</option></select>
+<p id="myScore"></p>
+<div id="myConfusion"></div>
+<div id="myWrong"></div>
+
+</div>
+
+
+<!-- ============================ DESKTOP SD ============================ -->
+<div id="myPanelSd" class="myPanel">
+<h2>Desktop SD: the card in this computer</h2>
+<p><b>SD card &rarr; computer &rarr; train &rarr; SD card</b></p>
+<p class="myMsg" id="myMsgSd"></p>
+
+<h3>1. Load data</h3>
+<p>Take the SD card out of the XIAO and put it in this computer.</p>
+<input type="button" value="Choose SD Card" onclick="myChooseSD()">
+<input type="file" id="myFolderInput" webkitdirectory multiple hidden onchange="myReadFolderInput(this)">
+<p id="mySdSummary">No SD card chosen yet.</p>
+
+<div id="myWorkSlotSd"></div>
+
+<div id="mySdSave" hidden>
+<h3>Save</h3>
+<input type="button" value="Save to SD" onclick="mySaveSD()">
+<input type="button" value="Download SD-ready ZIP" onclick="mySaveZip()">
+<p>Then put the card back in the XIAO and reboot it. No card swapping: use the DESKTOP BLE or DESKTOP SERIAL tab to send the model straight to the XIAO.</p>
+</div>
+</div>
+
+
+<!-- ============================ DESKTOP BLE ============================ -->
+<div id="myPanelBle" class="myPanel" hidden>
+<h2>Desktop BLE: Bluetooth to the XIAO</h2>
+<p><b>XIAO &harr; Bluetooth &harr; computer &rarr; train &rarr; XIAO</b></p>
+<p class="myMsg" id="myMsgBle"></p>
+<p id="mySumBle"></p>
+<div id="myLinkSlotBle"></div>
+<details>
+<summary>BLE settings (if transfers still stall)</summary>
+<p>Write mode (page &rarr; XIAO): <select id="myBleWrite" onchange="myBleWriteMode()">
+<option value="auto">auto (fast writes only when packets are tiny)</option>
+<option value="resp">always with response (slowest, safest)</option>
+<option value="noresp">always without response (fastest)</option></select><br>
+<small>Close other apps and tabs that use this XIAO, and keep it within a few metres. Windows can be slow to negotiate packet size: the status above shows the packet size in use.</small></p>
+</details>
+<div id="myWorkSlotBle"></div>
+<div id="mySendSlotBle"></div>
+</div>
+
+
+<!-- ============================ DESKTOP SERIAL ============================ -->
+<div id="myPanelSer" class="myPanel" hidden>
+<h2>Desktop Serial: USB cable to the XIAO</h2>
+<p><b>XIAO &harr; USB cable &harr; computer &rarr; train &rarr; XIAO</b></p>
+<p>This is the only place that opens the serial port. Close the Arduino serial monitor first. Chrome or Edge only.</p>
+<p class="myMsg" id="myMsgSer"></p>
+<p id="mySumSer"></p>
+<div id="myLinkSlotSer"></div>
+<div id="myWorkSlotSer"></div>
+<div id="mySendSlotSer"></div>
+
+<h3>Live sensor and serial monitor</h3>
+<label><input type="checkbox" id="myLiveBox" onclick="myDebugSync()"> show the live XIAO sensor</label>
+<span id="myHbText"></span><br>
+<canvas id="myCvHb" width="480" height="140"></canvas>
+
+<h3>Serial monitor</h3>
+<textarea id="myMon" rows="12" readonly style="width:100%"></textarea>
+<p><input type="text" id="myMonIn" style="width:70%" onkeydown="if(event.key==='Enter')mySerialSend()">
+<input type="button" value="Send" onclick="mySerialSend()"><br>
+<small>Text goes to the XIAO menu. Start with ! to send a protocol command, for example !STATUS</small></p>
+</div>
+
+<!-- ============================ PHONE ============================ -->
+<div id="myPanelPhone" class="myPanel" hidden>
+<h2>Phone: the phone is the sensor</h2>
+<p>Phone = sensor + training interface. Connect the XIAO below to send it samples and models.</p>
+<p class="myMsg" id="myMsgPhone"></p>
+<div id="myLinkSlotPhone"></div>
+<p id="myPhoneStatus"></p>
+
+<h3>1. Collect</h3>
+<input type="button" value="Enable phone sensor" onclick="myEnablePhone()">
+Record with: <select id="mySource"><option value="phone">phone sensor</option><option value="xiao">XIAO sensor</option></select>
+<div id="myRecordButtons"></div>
+<canvas id="myCvLive" width="480" height="140"></canvas>
+<p>Live (g): <span id="myLiveAxes">-</span></p>
+<input type="button" value="Delete last sample" onclick="myDeleteLast()">
+<details>
+<summary>Advanced phone sensor settings</summary>
+<p>Get-ready delay before a recording (ms): <input type="number" id="myDelay" value="1000" min="0" max="5000" style="width:90px"></p>
+<p>XIAO axis ax from phone: <select id="myMapX"></select>
+ay: <select id="myMapY"></select>
+az: <select id="myMapZ"></select><br>
+The XIAO reads about +1 g on Z when it lies flat. Phones may report the opposite sign.
+<input type="button" value="Check Z (lay phone flat, face up)" onclick="myCheckFlat()"></p>
+<p>Still calibration (only used when normalization is set to "still window" under Advanced): <span id="myCalibText"></span><br>
+<input type="button" value="Calibrate from still phone" onclick="myCalibratePhone()"></p>
+</details>
+
+<h3>2. Train</h3>
+<input type="button" value="Train" onclick="myTrain()">
+<input type="button" value="Stop" onclick="myStopTrain()">
+<p id="myTrainPhone">not trained yet</p>
+<canvas id="myCvLossPhone" width="480" height="120"></canvas>
+
+<h3>3. Run on the phone</h3>
+<input type="button" id="myBtnRunPhone" value="Run on phone" onclick="myToggleRunPhone()">
+<p><b id="myResBannerPhone">no phone result yet</b></p>
+<div id="myResBarsPhone"></div>
+<div id="mySendSlotPhone"></div>
+</div>
+
+
+
+
+<!-- ============================ ADVANCED / DEVELOPER ============================ -->
+<details class="myPanel">
+<summary><b>Advanced / Developer</b></summary>
+
+<h3>Training settings</h3>
+<p>learning rate <input type="number" id="myLr" value="0.001" step="0.0005" style="width:90px">
+batch <input type="number" id="myBatch" value="6" style="width:60px">
+epochs <input type="number" id="myEpochs" value="30" style="width:60px">
+validation samples per class <input type="number" id="myVal" value="3" style="width:60px"><br>
+<label><input type="checkbox" id="myFresh"> start from random weights (leave unticked to keep improving the model in memory)</label></p>
+
+<h3>Classes and layout</h3>
+<p>Class names, comma separated (the folder names on the SD card):<br>
+<input type="text" id="myClassInput" style="width:70%"> <input type="button" value="Apply" onclick="myApplyClassNames()"></p>
+<pre id="myLayoutInfo"></pre>
+
+<h3>Normalization</h3>
+<p>How the numbers are scaled before the network sees them:
+<select id="myNormMode"><option value="data">from the training data (v006, recommended)</option><option value="still">from a still window (v005, saturates)</option></select><br>
+current mean and std: <span id="myCalibText2"></span><br>
+Still-window tools (only for "still window"):
+<input type="button" value="Calibrate XIAO (keep it still)" onclick="myCalibrateXiao()">
+<input type="button" value="Use XIAO calibration" onclick="myUseXiaoCal()"></p>
+
+<h3>XIAO tools</h3>
+<input type="button" value="Adopt XIAO layout and class names" onclick="myAdoptXiao()">
+<input type="button" value="Send config.json to XIAO" onclick="mySendConfig()">
+<br>
+<label><input type="checkbox" id="myParity" onclick="myDebugSync()"> parity: compare every XIAO prediction with this page</label><br>
+<label><input type="checkbox" id="myRaw"> log raw frames</label>
+<p id="myParityText"></p>
+<pre id="myXiaoRaw"></pre>
+
+<h3>Console</h3>
+<textarea id="myLog" rows="8" readonly style="width:100%"></textarea>
+</details>
+
+<script>
+'use strict';
+/* ==CORE START== */
+// ---------------------------------------------------------------------------
+// CORE: everything here has no DOM use, so it can be tested in Node.
+// ---------------------------------------------------------------------------
+const DEFAULT_LAYOUT = { T: 40, K: 5, F: 8, D1: 32, D2: 16, C: 3, INT: 25 };
+
+// All sizes derive from the layout, exactly like the sketch's #defines.
+function derive(l) {
+  const d = { T: l.T, K: l.K, F: l.F, D1: l.D1, D2: l.D2, C: l.C, INT: l.INT };
+  d.IN = d.T * 3;
+  d.CO = d.T - d.K + 1;                 // conv output steps
+  d.PO = Math.floor(d.CO / 2);          // after 2x max pool
+  d.FLAT = d.PO * d.F;
+  // order: conv_w conv_b dense1_w dense1_b dense2_w dense2_b out_w out_b (the weights file order)
+  d.sizes = [d.K * 3 * d.F, d.F, d.FLAT * d.D1, d.D1, d.D1 * d.D2, d.D2, d.D2 * d.C, d.C];
+  d.nW = d.sizes.reduce((a, b) => a + b, 0);
+  d.nPkg = d.nW + 6;                    // + calibration mean[3] + std[3]
+  return d;
+}
+
+function layoutError(l) {
+  const v = [l.T, l.K, l.F, l.D1, l.D2, l.C, l.INT];
+  if (!v.every(Number.isInteger)) return 'all layout values must be whole numbers';
+  const d = derive(l);
+  if (l.T < 8 || l.T > 200) return 'timesteps must be 8..200';
+  if (l.K < 1 || l.K > 15) return 'kernel must be 1..15';
+  if (l.F < 1 || l.F > 32) return 'filters must be 1..32';
+  if (l.D1 < 1 || l.D1 > 128) return 'dense1 must be 1..128';
+  if (l.D2 < 1 || l.D2 > 64) return 'dense2 must be 1..64';
+  if (l.C < 2 || l.C > 20) return 'classes must be 2..20';
+  if (l.INT < 5 || l.INT > 200) return 'interval must be 5..200 ms';
+  if (d.CO < 2 || d.CO % 2) return 'timesteps - kernel + 1 = ' + d.CO + ' must be even and at least 2 (the sketch pools by 2)';
+  return '';
+}
+
+// v006: mean and std per axis over every timestep of every window (raw g). This REPLACES the
+// still-window std of v005, which was floored at 0.01 and saturated every real movement at +-5
+// (Still and Punch became the same picture). MIN_STD equals MY_MIN_STD in the sketch.
+const MIN_STD = 0.05;
+function statsFromItems(items, d) {
+  const s1 = [0, 0, 0], s2 = [0, 0, 0]; let n = 0;
+  items.forEach(it => { for (let t = 0; t < d.T; t++) { for (let a = 0; a < 3; a++) { const v = it.win[t * 3 + a]; s1[a] += v; s2[a] += v * v; } n++; } });
+  const mean = new Float32Array(3), std = new Float32Array(3);
+  if (!n) return { mean: Float32Array.from([0, 0, 1]), std: Float32Array.from([1, 1, 1]), n: 0 };
+  for (let a = 0; a < 3; a++) { const mu = s1[a] / n, v = s2[a] / n - mu * mu, sd = v > 0 ? Math.sqrt(v) : 0; mean[a] = mu; std[a] = sd > MIN_STD ? sd : MIN_STD; }
+  return { mean, std, n };
+}
+
+function sameLayout(a, b) {
+  return ['T', 'K', 'F', 'D1', 'D2', 'C'].every(k => a[k] === b[k]);
+}
+
+
+
+function newModel(d, rng) {
+  rng = rng || Math.random;
+  const std = [Math.sqrt(2 / (d.K * 3)), 0, Math.sqrt(2 / d.FLAT), 0, Math.sqrt(2 / d.D1), 0, Math.sqrt(2 / d.D2), 0];
+  const w = d.sizes.map((n, i) => {
+    const a = new Float32Array(n);
+    if (std[i] > 0) for (let j = 0; j < n; j++) a[j] = (rng() - 0.5) * 2 * std[i];   // same uniform He init as the sketch
+    return a;
+  });
+  return { d, w, mean: Float32Array.from([0, 0, 1]), std: Float32Array.from([1, 1, 1]), opt: null, unsaved: false, source: 'random' };
+}
+
+function cloneModel(m) {
+  const c = { d: m.d, w: m.w.map(a => a.slice()), mean: m.mean.slice(), std: m.std.slice(), opt: null, unsaved: m.unsaved, source: m.source };
+  if (m.opt) c.opt = { m: m.opt.m.map(a => a.slice()), v: m.opt.v.map(a => a.slice()), step: m.opt.step };
+  return c;
+}
+
+function restoreModel(m, snap) {
+  m.w.forEach((a, i) => a.set(snap.w[i]));
+  m.opt = snap.opt ? { m: snap.opt.m.map(a => a.slice()), v: snap.opt.v.map(a => a.slice()), step: snap.opt.step } : null;
+}
+
+function clip(v, mn, mx) { if (!isFinite(v)) return 0; return v < mn ? mn : (v > mx ? mx : v); }
+
+// The ONE input function: used for training, inference, the analysis and the "model input view".
+function normalize(raw, mean, std, d) {
+  const out = new Float32Array(d.IN);
+  for (let t = 0; t < d.T; t++) for (let a = 0; a < 3; a++) {
+    const i = t * 3 + a;
+    out[i] = clip((raw[i] - mean[a]) / (std[a] + 1e-8), -5, 5);
+  }
+  return out;
+}
+
+const lrelu = x => x > 0 ? x : 0.1 * x;
+const dlrelu = x => x > 0 ? 1 : 0.1;
+
+function dense(inp, n, w, b, m, act) {
+  const o = new Float32Array(m);
+  for (let j = 0; j < m; j++) { let s = b[j]; for (let i = 0; i < n; i++) s += inp[i] * w[i * m + j]; o[j] = act ? lrelu(s) : s; }
+  return o;
+}
+
+function softmax(z) {
+  let mx = z[0]; for (let i = 1; i < z.length; i++) if (z[i] > mx) mx = z[i];
+  const o = new Float32Array(z.length); let s = 0;
+  for (let i = 0; i < z.length; i++) { o[i] = Math.exp(z[i] - mx); s += o[i]; }
+  for (let i = 0; i < z.length; i++) o[i] /= s;
+  return o;
+}
+
+// x = normalized input (d.IN floats). Mirrors myForwardPass().
+function forward(m, x) {
+  const d = m.d, cw = m.w[0], cb = m.w[1];
+  const conv = new Float32Array(d.CO * d.F);
+  for (let s = 0; s < d.CO; s++) for (let f = 0; f < d.F; f++) {
+    let sum = cb[f];
+    for (let k = 0; k < d.K; k++) for (let a = 0; a < 3; a++) sum += x[(s + k) * 3 + a] * cw[(k * 3 + a) * d.F + f];
+    conv[s * d.F + f] = lrelu(sum);
+  }
+  const pool = new Float32Array(d.FLAT);
+  for (let s = 0; s < d.PO; s++) for (let f = 0; f < d.F; f++) {
+    const a = conv[(s * 2) * d.F + f], b = conv[(s * 2 + 1) * d.F + f];
+    pool[s * d.F + f] = a > b ? a : b;
+  }
+  const h1 = dense(pool, d.FLAT, m.w[2], m.w[3], d.D1, true);
+  const h2 = dense(h1, d.D1, m.w[4], m.w[5], d.D2, true);
+  const logits = dense(h2, d.D2, m.w[6], m.w[7], d.C, false);
+  return { conv, pool, h1, h2, logits, probs: softmax(logits) };
+}
+
+function zeroGrads(m) { return m.w.map(a => new Float32Array(a.length)); }
+
+// Accumulates into g. Mirrors myBackwardPass() line by line (including the pool tie rule a>=b).
+function backward(m, x, fw, label, g) {
+  const d = m.d, w1 = m.w[2], w2 = m.w[4], wo = m.w[6];
+  const od = new Float32Array(d.C);
+  for (let j = 0; j < d.C; j++) od[j] = fw.probs[j] - (j === label ? 1 : 0);
+  for (let i = 0; i < d.D2; i++) for (let j = 0; j < d.C; j++) g[6][i * d.C + j] += fw.h2[i] * od[j];
+  for (let j = 0; j < d.C; j++) g[7][j] += od[j];
+
+  const d2 = new Float32Array(d.D2);
+  for (let i = 0; i < d.D2; i++) { let s = 0; for (let j = 0; j < d.C; j++) s += wo[i * d.C + j] * od[j]; d2[i] = s * dlrelu(fw.h2[i]); }
+  for (let i = 0; i < d.D1; i++) for (let j = 0; j < d.D2; j++) g[4][i * d.D2 + j] += fw.h1[i] * d2[j];
+  for (let j = 0; j < d.D2; j++) g[5][j] += d2[j];
+
+  const d1 = new Float32Array(d.D1);
+  for (let i = 0; i < d.D1; i++) { let s = 0; for (let j = 0; j < d.D2; j++) s += w2[i * d.D2 + j] * d2[j]; d1[i] = s * dlrelu(fw.h1[i]); }
+  for (let i = 0; i < d.FLAT; i++) for (let j = 0; j < d.D1; j++) g[2][i * d.D1 + j] += fw.pool[i] * d1[j];
+  for (let j = 0; j < d.D1; j++) g[3][j] += d1[j];
+
+  const cd = new Float32Array(d.CO * d.F);
+  for (let s = 0; s < d.PO; s++) for (let f = 0; f < d.F; f++) {
+    const i = s * d.F + f;
+    let grad = 0; for (let j = 0; j < d.D1; j++) grad += w1[i * d.D1 + j] * d1[j];
+    const a = fw.conv[(s * 2) * d.F + f], b = fw.conv[(s * 2 + 1) * d.F + f];
+    cd[(s * 2) * d.F + f] = a >= b ? grad : 0;
+    cd[(s * 2 + 1) * d.F + f] = b > a ? grad : 0;
+  }
+  for (let s = 0; s < d.CO; s++) for (let f = 0; f < d.F; f++) {
+    const delta = cd[s * d.F + f] * dlrelu(fw.conv[s * d.F + f]);
+    g[1][f] += delta;
+    for (let k = 0; k < d.K; k++) for (let a = 0; a < 3; a++) g[0][(k * 3 + a) * d.F + f] += x[(s + k) * 3 + a] * delta;
+  }
+}
+
+// Adam exactly like myAdamUpdate(), including the quirk that the step counter advances once per
+// parameter ARRAY (8 times per batch). Added for the browser: non-finite gradients count as 0 and
+// every single update is bounded (the sketch has neither).
+const MAX_UPDATE = 0.05;
+function adamUpdate(m, g, lr) {
+  if (!m.opt) m.opt = { m: m.w.map(a => new Float32Array(a.length)), v: m.w.map(a => new Float32Array(a.length)), step: 0 };
+  const o = m.opt, b1 = 0.9, b2 = 0.999, eps = 1e-8;
+  for (let p = 0; p < 8; p++) {
+    o.step++;
+    const bc1 = 1 - Math.pow(b1, o.step), bc2 = 1 - Math.pow(b2, o.step);
+    const w = m.w[p], gr = g[p], mm = o.m[p], vv = o.v[p];
+    for (let i = 0; i < w.length; i++) {
+      let gi = gr[i]; if (!isFinite(gi)) gi = 0;
+      mm[i] = b1 * mm[i] + (1 - b1) * gi;
+      vv[i] = b2 * vv[i] + (1 - b2) * gi * gi;
+      let u = lr * (mm[i] / bc1) / (Math.sqrt(vv[i] / bc2) + eps);
+      if (!isFinite(u)) u = 0; else if (u > MAX_UPDATE) u = MAX_UPDATE; else if (u < -MAX_UPDATE) u = -MAX_UPDATE;
+      w[i] -= u;
+    }
+  }
+}
+
+function argmax(a) { let b = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[b]) b = i; return b; }
+
+function shuffled(n, rng) {
+  const o = Array.from({ length: n }, (_, i) => i);
+  for (let i = n - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [o[i], o[j]] = [o[j], o[i]]; }
+  return o;
+}
+
+// Hold out the last valN per class (capture order); always leave at least one training sample.
+function splitData(items, nClasses, valN) {
+  const by = Array.from({ length: nClasses }, () => []);
+  items.forEach(it => by[it.cls].push(it));
+  const train = [], val = [];
+  by.forEach(arr => {
+    const v = Math.min(valN, Math.max(0, arr.length - 1));
+    arr.slice(0, arr.length - v).forEach(x => train.push(x));
+    arr.slice(arr.length - v).forEach(x => val.push(x));
+  });
+  return { train, val };
+}
+
+function yieldTick() {
+  return new Promise(res => { const c = new MessageChannel(); c.port1.onmessage = () => { c.port1.close(); res(); }; c.port2.postMessage(0); });
+}
+
+// items: [{cls, win}] with win.length === d.IN. cfg: {lr, batch, epochs, valN, rng}. hooks: {onEpoch, stop, tick, log}
+async function trainModel(m, items, cfg, hooks) {
+  hooks = hooks || {};
+  const d = m.d, rng = cfg.rng || Math.random;
+  const sp = splitData(items, d.C, cfg.valN);
+  if (cfg.normFromData) { const st = statsFromItems(sp.train, d); m.mean.set(st.mean); m.std.set(st.std); }   // v006: before anything is normalized
+  const X = sp.train.map(it => normalize(it.win, m.mean, m.std, d)), Y = sp.train.map(it => it.cls);
+  const VX = sp.val.map(it => normalize(it.win, m.mean, m.std, d)), VY = sp.val.map(it => it.cls);
+  let lr = cfg.lr, rollbacks = 0, snap = cloneModel(m), stopped = false;
+  const hist = [];
+  for (let ep = 0; ep < cfg.epochs; ep++) {
+    if (hooks.stop && hooks.stop()) { stopped = true; break; }
+    const order = shuffled(X.length, rng);
+    let loss = 0, correct = 0, processed = 0;
+    const g = zeroGrads(m);
+    for (let si = 0; si < order.length; si++) {
+      const i = order[si], fw = forward(m, X[i]);
+      loss += -Math.log(Math.max(fw.probs[Y[i]], 1e-7));
+      if (argmax(fw.probs) === Y[i]) correct++;
+      backward(m, X[i], fw, Y[i], g);
+      processed++;
+      if ((si + 1) % cfg.batch === 0 || si === order.length - 1) {
+        const sc = 1 / processed;                       // the sketch averages the batch gradient
+        g.forEach(a => { for (let k = 0; k < a.length; k++) a[k] *= sc; });
+        adamUpdate(m, g, lr);
+        g.forEach(a => a.fill(0));
+        processed = 0;
+        if (hooks.tick) await hooks.tick();
+        if (hooks.stop && hooks.stop()) { stopped = true; break; }
+      }
+    }
+    if (stopped) break;
+    const avg = loss / Math.max(X.length, 1);
+    const bad = !isFinite(avg) || !m.w.every(a => a.every(Number.isFinite));
+    if (bad) {                                          // roll back to the last good epoch, halve the rate
+      rollbacks++;
+      if (hooks.log) hooks.log('epoch ' + (ep + 1) + ' went non-finite: rolled back, learning rate halved (' + rollbacks + ')');
+      if (rollbacks > 5) { restoreModel(m, snap); break; }
+      restoreModel(m, snap); lr /= 2; ep--; continue;
+    }
+    snap = cloneModel(m);
+    let vc = 0; VX.forEach((x, i) => { if (argmax(forward(m, x).probs) === VY[i]) vc++; });
+    const e = { ep: ep + 1, epochs: cfg.epochs, loss: avg, trainAcc: correct / Math.max(X.length, 1), valAcc: VX.length ? vc / VX.length : NaN, lr, rollbacks };
+    hist.push(e);
+    if (hooks.onEpoch) hooks.onEpoch(e);
+  }
+  return { split: sp, hist, stopped };
+}
+
+function evaluate(m, items) {
+  const n = m.d.C, cm = Array.from({ length: n }, () => new Array(n).fill(0)), preds = [];
+  items.forEach(it => {
+    const fw = forward(m, normalize(it.win, m.mean, m.std, m.d)), p = argmax(fw.probs);
+    cm[it.cls][p]++;
+    preds.push({ it, p, probs: fw.probs, pTrue: fw.probs[it.cls] });
+  });
+  return { cm, preds };
+}
+
+function perClassStats(cm) {
+  return cm.map((row, c) => {
+    const n = row.reduce((a, b) => a + b, 0);
+    let col = 0; cm.forEach(r => col += r[c]);
+    return { n, precision: col ? row[c] / col : NaN, recall: n ? row[c] / n : NaN };
+  });
+}
+
+// ---- weights, calibration, packages (float32 little endian, the sketch's byte layout) ----
+function f32bytes(arrs) {
+  const n = arrs.reduce((a, b) => a + b.length, 0), f = new Float32Array(n);
+  let o = 0; arrs.forEach(a => { f.set(a, o); o += a.length; });
+  return new Uint8Array(f.buffer);
+}
+function packModel(m) { return f32bytes([...m.w, m.mean, m.std]); }        // weights file + calibration
+function weightsBytes(m) { return f32bytes(m.w); }                          // exactly myMotionWeights.bin
+function calibBytes(m) { return f32bytes([m.mean, m.std]); }                // exactly myCalib.bin
+function toFloats(bytes) { return new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)); }
+
+function modelFromFloats(f, d, withCalib) {
+  if (!f.every(Number.isFinite)) throw new Error('the file holds NaN or Infinity - refused');
+  const m = newModel(d); let o = 0;
+  m.w.forEach(a => { a.set(f.subarray(o, o + a.length)); o += a.length; });
+  if (withCalib) { m.mean.set(f.subarray(o, o + 3)); m.std.set(f.subarray(o + 3, o + 6)); }
+  return m;
+}
+function unpackModel(bytes, d) {
+  if (bytes.length !== d.nPkg * 4) throw new Error('package is ' + bytes.length + ' bytes but this layout needs ' + d.nPkg * 4);
+  return modelFromFloats(toFloats(bytes), d, true);
+}
+function loadWeightsFile(bytes, d) {
+  if (bytes.length !== d.nW * 4) throw new Error('weights file is ' + bytes.length + ' bytes but this layout needs ' + d.nW * 4);
+  return modelFromFloats(toFloats(bytes), d, false);
+}
+
+// calibration like myCalibrate(): mean and std over one still window, std floored at 0.01
+function calibFromWindow(win, d) {
+  const mean = new Float32Array(3), std = new Float32Array(3);
+  for (let a = 0; a < 3; a++) {
+    let s = 0, s2 = 0;
+    for (let t = 0; t < d.T; t++) { const v = win[t * 3 + a]; s += v; s2 += v * v; }
+    mean[a] = s / d.T;
+    const variance = s2 / d.T - mean[a] * mean[a];
+    const sd = Math.sqrt(Math.max(variance, 0));
+    std[a] = sd > 0.01 ? sd : 0.01;
+  }
+  return { mean, std };
+}
+
+// ---- phone windows: events in the device frame (g), resampled to the device interval ----
+// events: [{t(ms), x, y, z}] sorted by t. Sample times are t0 + k*interval.
+function resampleWindow(events, t0, d) {
+  const out = new Float32Array(d.IN);
+  if (events.length < 2) return { win: out, ok: false, why: 'fewer than 2 sensor events' };
+  let j = 0;
+  for (let k = 0; k < d.T; k++) {
+    const tt = t0 + k * d.INT;
+    while (j + 1 < events.length - 1 && events[j + 1].t <= tt) j++;
+    const a = events[j], b = events[j + 1];
+    let u = (tt - a.t) / Math.max(b.t - a.t, 1e-6); u = u < 0 ? 0 : (u > 1 ? 1 : u);
+    out[k * 3] = a.x + (b.x - a.x) * u; out[k * 3 + 1] = a.y + (b.y - a.y) * u; out[k * 3 + 2] = a.z + (b.z - a.z) * u;
+  }
+  const end = t0 + (d.T - 1) * d.INT;
+  const ok = events[0].t <= t0 + d.INT && events[events.length - 1].t >= end - d.INT;
+  return { win: out, ok, why: ok ? '' : 'the sensor events do not cover the whole window' };
+}
+
+// map: three strings like 'x', '-y', 'z' (device ax, ay, az from phone axis). m/s^2 -> g.
+function mapPhone(ev, map) {
+  const src = { x: ev.x, y: ev.y, z: ev.z }, o = { t: ev.t };
+  ['x', 'y', 'z'].forEach((k, i) => { const s = map[i]; o[k] = (s[0] === '-' ? -1 : 1) * src[s[s.length - 1]] / 9.80665; });
+  return o;
+}
+
+// ---- CSV samples (the sketch's format: one row per timestep, ax,ay,az) ----
+function winToCsv(win) {
+  let s = '';
+  for (let t = 0; t < win.length / 3; t++) s += win[t * 3].toFixed(5) + ',' + win[t * 3 + 1].toFixed(5) + ',' + win[t * 3 + 2].toFixed(5) + '\n';
+  return s;
+}
+function csvToWin(text) {
+  const rows = text.split(/\r?\n/).map(r => r.trim()).filter(Boolean).map(r => r.split(',').map(Number));
+  const w = new Float32Array(rows.length * 3);
+  rows.forEach((r, t) => { for (let a = 0; a < 3; a++) w[t * 3 + a] = Number.isFinite(r[a]) ? r[a] : 0; });
+  return w;
+}
+
+function configJson(classes, l) {
+  return JSON.stringify({ classes, timesteps: l.T, axes: 3, kernel: l.K, filters: l.F, dense1: l.D1, dense2: l.D2, interval_ms: l.INT, input_size: l.T * 3 });
+}
+
+// ---- CRC32, base64, frames ----
+const crcTable = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = crcTable[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function b64enc(u8) { let s = ''; for (let i = 0; i < u8.length; i += 4096) s += String.fromCharCode.apply(null, u8.subarray(i, i + 4096)); return btoa(s); }
+function b64dec(str) { const s = atob(str), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; }
+
+const FT = { H: 0x48, D: 0x44, A: 0x41, T: 0x54, R: 0x52 };
+const CHUNK = 160, WIN = 4;     // must equal MY_CHUNK_DATA and MY_WIN in the sketch
+function fHead(kind, id, total, crc) { const f = new Uint8Array(11), dv = new DataView(f.buffer); f[0] = FT.H; f[1] = kind.charCodeAt(0); f[2] = id; dv.setUint32(3, total, true); dv.setUint32(7, crc, true); return f; }
+function fData(seq, bytes) { const f = new Uint8Array(3 + bytes.length); f[0] = FT.D; f[1] = seq & 255; f[2] = seq >> 8; f.set(bytes, 3); return f; }
+function fAck(next, st) { return Uint8Array.of(FT.A, next & 255, next >> 8, st); }
+function fText(s) { const e = new TextEncoder().encode(s), f = new Uint8Array(1 + e.length); f[0] = FT.T; f.set(e, 1); return f; }
+
+// One link object for both transports. The transport supplies sendRaw(frameBytes) and feeds frames to feed().
+class Link {
+  constructor() {
+    this.sendRaw = null; this.up = () => !!this.sendRaw;
+    this.onText = () => {}; this.onBlob = () => {};
+    this.rx = null; this.ackWaiter = null; this.textWaiters = []; this.blobWaiters = []; this.onRxProgress = () => {};
+    this.ackBest = { next: 0, status: 0 }; this.ackCount = 0; this.ackAbort = false; this.ackCrc = false;   // acks are remembered, never dropped
+    this.ackMs = 4000; this.lastSend = null;        // v007: how long to wait for an ack (the page raises it for small BLE packets)
+  }
+  get connected() { return this.up(); }
+  async sendFrame(f) { if (!this.up()) throw new Error('not connected'); await this.sendRaw(f); }
+  cmd(text) { return this.sendFrame(fText(text)); }
+  async sendQuiet(f) { try { await this.sendFrame(f); } catch (e) { /* an ack that cannot be sent is simply resent by the protocol */ } }
+  // used when a command could not even be sent: reject whatever was waiting for its answer
+  dropWaiters(why) {
+    this.textWaiters.forEach(w => { clearTimeout(w.t); w.rej(new Error(why || 'command not sent')); }); this.textWaiters = [];
+    this.blobWaiters.forEach(w => { clearTimeout(w.t); w.rej(new Error(why || 'command not sent')); }); this.blobWaiters = [];
+  }
+  // v007: tell the device to stop sending (status 2 = abort) and forget a half received blob, before asking again
+  async abortIncoming() { this.rx = null; await this.sendQuiet(fAck(0, 2)); }
+
+  feed(f) {
+    if (!f || !f.length) return;
+    if (f[0] === FT.R) { this.textIn(new TextDecoder().decode(f.subarray(1))); return; }
+    if (f[0] === FT.A && f.length >= 4) {
+      const a = { next: f[1] | (f[2] << 8), status: f[3] };
+      if (a.status === 2) this.ackAbort = true;
+      if (a.status === 1) this.ackCrc = true;
+      if (a.next >= this.ackBest.next) this.ackBest = a;     // the highest ack so far is the truth
+      this.ackCount++;
+      const w = this.ackWaiter; if (w) { this.ackWaiter = null; w(); }
+      return;
+    }
+    if (f[0] === FT.H && f.length === 11) {
+      const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), total = dv.getUint32(3, true);
+      if (total > (1 << 20)) return;
+      this.rx = { kind: String.fromCharCode(f[1]), id: f[2], total, crc: dv.getUint32(7, true), buf: new Uint8Array(total), next: 0, got: 0, last: Date.now(), t0: Date.now(), nacks: 0 };
+      this.touchBlobWaiters();
+      return;
+    }
+    if (f[0] === FT.D && f.length > 3) this.onData(f);
+  }
+  onData(f) {
+    const r = this.rx; if (!r) return;
+    const seq = f[1] | (f[2] << 8), data = f.subarray(3), off = seq * CHUNK;
+    if (seq !== r.next) { r.nacks++; this.sendQuiet(fAck(r.next, 0)); return; }
+    if (data.length !== CHUNK && off + data.length !== r.total) { r.nacks++; this.sendQuiet(fAck(r.next, 0)); return; }   // v007: a short chunk that is not the last one is damaged
+    if (off + data.length > r.total) { this.rx = null; this.sendQuiet(fAck(r.next, 2)); return; }
+    r.buf.set(data, off); r.next++; r.got += data.length; r.last = Date.now();
+    this.touchBlobWaiters(); this.onRxProgress(r.kind, r.got / r.total);
+    if (r.got >= r.total) {
+      this.rx = null;
+      const ok = crc32(r.buf) === r.crc;
+      this.sendQuiet(fAck(r.next, ok ? 0 : 1));
+      this.blobIn({ kind: r.kind, id: r.id, bytes: r.buf, ok, ms: Date.now() - r.t0, nacks: r.nacks });
+    } else if (r.next % WIN === 0) this.sendQuiet(fAck(r.next, 0));
+  }
+  watchdog() { if (this.rx && Date.now() - this.rx.last > 15000) { this.rx = null; return true; } return false; }
+
+  textIn(s) {
+    this.onText(s);
+    this.textWaiters = this.textWaiters.filter(w => {
+      if (s.startsWith(w.prefix)) { clearTimeout(w.t); w.res(s); return false; }
+      if (s.startsWith('ERR') || s === 'BUSY') { clearTimeout(w.t); w.rej(new Error(s)); return false; }   // v006: BUSY ends a wait too
+      return true;
+    });
+    if (s.startsWith('ERR') || s === 'BUSY') { this.blobWaiters.forEach(w => { clearTimeout(w.t); w.rej(new Error(s)); }); this.blobWaiters = []; }
+  }
+  blobIn(b) {
+    this.onBlob(b);
+    this.blobWaiters = this.blobWaiters.filter(w => {
+      if (b.kind === w.kind && (w.test ? w.test(b) : true)) { clearTimeout(w.t); w.res(b); return false; }
+      return true;
+    });
+  }
+  // v006: with deferred = true the timer starts only when .arm() is called (after the command or blob was SENT),
+  // so a slow transfer can no longer use up the time meant for the reply.
+  waitText(prefix, ms, deferred) {
+    let w;
+    const p = new Promise((res, rej) => {
+      w = { prefix, res, rej, t: null };
+      w.arm = () => {
+        if (!this.textWaiters.includes(w)) return;
+        clearTimeout(w.t);
+        w.t = setTimeout(() => { this.textWaiters = this.textWaiters.filter(x => x !== w); rej(new Error('no "' + prefix.trim() + '" reply from the device in ' + ms + ' ms')); }, ms);
+      };
+      this.textWaiters.push(w);
+      if (!deferred) w.arm();
+    });
+    p.arm = () => w.arm();
+    return p;
+  }
+  // v006: ms is the longest SILENCE allowed: every frame of the incoming blob restarts it.
+  waitBlob(kind, ms, test) {
+    return new Promise((res, rej) => {
+      const w = { kind, test, res, rej, t: null };
+      w.arm = () => { clearTimeout(w.t); w.t = setTimeout(() => { this.blobWaiters = this.blobWaiters.filter(x => x !== w); rej(new Error('no "' + kind + '" data from the device in ' + ms + ' ms')); }, ms); };
+      this.blobWaiters.push(w); w.arm();
+    });
+  }
+  touchBlobWaiters() { this.blobWaiters.forEach(w => w.arm()); }
+  // resolves as soon as any ack has arrived after `since` (or immediately if one already did), or after ms
+  waitAck(since, ms) {
+    return new Promise(res => {
+      if (this.ackCount > since) { res(true); return; }
+      const t = setTimeout(() => { this.ackWaiter = null; res(false); }, ms);
+      this.ackWaiter = () => { clearTimeout(t); res(true); };
+    });
+  }
+  // page -> device. Go-back-N with an ack every WIN chunks. Acks that arrive early are kept (ackBest).
+  async sendBlob(kind, id, bytes, progress) {
+    const total = bytes.length, n = Math.ceil(total / CHUNK), crc = crc32(bytes);
+    this.ackBest = { next: 0, status: 0 }; this.ackCount = 0; this.ackAbort = false; this.ackCrc = false;
+    const t0 = Date.now(); let resends = 0, gotHead = false;
+    for (let h = 0; h < 3 && !gotHead; h++) {          // v007: the header is sent up to 3 times (a slow desktop link may miss the first)
+      const w0 = this.waitAck(0, this.ackMs);
+      await this.sendFrame(fHead(kind, id, total, crc));
+      gotHead = await w0; if (!gotHead) resends++;
+    }
+    if (!gotHead) throw new Error('the device did not answer the blob header (is the XIAO running the matching firmware, v007?)');
+    if (this.ackAbort) throw new Error('the device refused the transfer (see its reply in the console)');
+    let acked = 0, tries = 0;
+    while (acked < n) {
+      if (this.ackBest.next > acked) { acked = this.ackBest.next; tries = 0; if (progress) progress(acked / n); continue; }   // an ack came in meanwhile
+      const since = this.ackCount, end = Math.min(n, acked + WIN);
+      for (let s = acked; s < end; s++) await this.sendFrame(fData(s, bytes.subarray(s * CHUNK, Math.min(total, (s + 1) * CHUNK))));
+      const got = await this.waitAck(since, this.ackMs);
+      if (this.ackAbort) throw new Error('the device aborted the transfer');
+      if (this.ackCrc && this.ackBest.next >= n) throw new Error('the device reported a CRC error');
+      if (this.ackBest.next > acked) { acked = this.ackBest.next; tries = 0; if (progress) progress(acked / n); continue; }
+      if (++tries > 12) throw new Error('transfer stalled at chunk ' + acked + ' of ' + n);
+      resends++;
+      if (got) await new Promise(r => setTimeout(r, 80));   // a nack: one arrives per later chunk, let the duplicates drain, then resend
+    }
+    this.lastSend = { bytes: total, ms: Date.now() - t0, resends };
+  }
+}
+
+// v007: BLE carries only (MTU - 3) bytes per packet in BOTH directions (notifications and writes). Every packet is
+// [kind << 4 | index][bytes]: kind 0 = whole frame, 1 = first piece, 2 = middle piece, 3 = last piece; index counts
+// the pieces of one frame (mod 16), so a lost piece is noticed and the half frame dropped. Serial is not split.
+function bleFragment(f, P) {                       // f: frame bytes, P: bytes per packet (>= 8). Returns packets.
+  const room = P - 1;
+  if (f.length <= room) { const p = new Uint8Array(f.length + 1); p.set(f, 1); return [p]; }
+  const out = []; let idx = 0;
+  for (let off = 0; off < f.length; off += room) {
+    const body = f.subarray(off, Math.min(f.length, off + room));
+    const kind = off === 0 ? 1 : (off + room >= f.length ? 3 : 2);
+    const p = new Uint8Array(body.length + 1); p[0] = (kind << 4) | (idx++ & 15); p.set(body, 1); out.push(p);
+  }
+  return out;
+}
+class BleReassembler {
+  constructor() { this.parts = null; this.next = 0; this.dropped = 0; }
+  push(u8) {                                   // returns a complete frame or null
+    if (!u8 || !u8.length) return null;
+    const kind = u8[0] >> 4, idx = u8[0] & 15, body = u8.slice(1);
+    if (kind === 0) { this.parts = null; return body; }
+    if (kind === 1) { this.parts = [body]; this.next = (idx + 1) & 15; return null; }
+    if (!this.parts || idx !== this.next || kind > 3) { this.parts = null; this.dropped++; return null; }   // a piece was lost
+    this.parts.push(body); this.next = (idx + 1) & 15;
+    if (kind === 2) return null;
+    const out = new Uint8Array(this.parts.reduce((n, x) => n + x.length, 0)); let o = 0;
+    this.parts.forEach(x => { out.set(x, o); o += x.length; }); this.parts = null;
+    return out;
+  }
+}
+// v007: every BLE write goes through here, ONE AT A TIME. Chrome rejects a second GATT operation while one is running
+// ("GATT operation already in progress"), which v006 lost silently (acks, the live-sensor request). Acks that wait in the
+// queue are merged into the newest one. Each packet is retried; fast writes fall back to safe ones after a failure.
+class BleTx {
+  constructor(write, wait) {                      // write(packet, withoutResponse) -> Promise, wait(ms) -> Promise
+    this.write = write; this.wait = wait; this.pkt = 20; this.mode = 'auto'; this.canNoResp = false; this.forceResp = false;
+    this.q = []; this.busy = false; this.isGone = () => false; this.retries = 0; this.packets = 0;
+  }
+  useNoResp() { return this.canNoResp && !this.forceResp && (this.mode === 'noresp' || (this.mode === 'auto' && this.pkt <= 20)); }
+  modeText() { return this.useNoResp() ? 'without response' : 'with response'; }
+  send(f) {
+    return new Promise((res, rej) => {
+      if (f[0] === FT.A) {
+        const old = this.q.find(x => x.f[0] === FT.A && !x.started);
+        if (old) { if (f[3] !== 0 || (f[1] | (f[2] << 8)) >= (old.f[1] | (old.f[2] << 8))) old.f = f; res(); return; }
+      }
+      this.q.push({ f, res, rej, started: false }); this.pump();
+    });
+  }
+  async pump() {
+    if (this.busy) return; this.busy = true;
+    while (this.q.length) {
+      const it = this.q.shift(); it.started = true;
+      try { for (const p of bleFragment(it.f, this.pkt)) await this.writePkt(p); it.res(); } catch (e) { it.rej(e); }
+    }
+    this.busy = false;
+  }
+  async writePkt(p) {
+    let last;
+    for (let a = 0; a < 5; a++) {
+      const nr = this.useNoResp();
+      try { await this.write(p, nr); this.packets++; return; }
+      catch (e) {
+        last = e; if (this.isGone()) throw e;
+        if (nr && a >= 1) this.forceResp = true;
+        this.retries++; await this.wait(25 * (a + 1));
+      }
+    }
+    throw last;
+  }
+}
+
+// Web Serial text stream: lines "@B <base64>" are frames, everything else is monitor text.
+class SerialParser {
+  constructor(onFrame, onText) { this.buf = ''; this.onFrame = onFrame; this.onText = onText; }
+  push(str) {
+    this.buf += str;
+    let i;
+    while ((i = this.buf.indexOf('\n')) >= 0) {
+      const line = this.buf.slice(0, i).replace(/\r$/, ''); this.buf = this.buf.slice(i + 1);
+      if (line.startsWith('@B ')) { try { this.onFrame(b64dec(line.slice(3).trim())); } catch (e) { /* a bad frame never breaks the monitor */ } }
+      else if (line.startsWith('@')) { /* unknown frame type: hidden */ }
+      else this.onText(line + '\n');
+    }
+    if (this.buf.length && this.buf[0] !== '@') {   // hold a partial line only if it starts with @
+      const hold = this.buf.endsWith('\r') ? '\r' : '';   // a CR may be the first half of CRLF split across chunks
+      const text = hold ? this.buf.slice(0, -1) : this.buf;
+      if (text) this.onText(text);
+      this.buf = hold;
+    }
+  }
+}
+
+// ---- zip (STORE writer) ----
+function zipStore(files) {
+  const enc = new TextEncoder(), parts = [], central = [];
+  let off = 0;
+  const u16 = v => Uint8Array.of(v & 255, (v >> 8) & 255), u32 = v => Uint8Array.of(v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255);
+  const cat = a => { const n = a.reduce((s, x) => s + x.length, 0), o = new Uint8Array(n); let p = 0; a.forEach(x => { o.set(x, p); p += x.length; }); return o; };
+  files.forEach(f => {
+    const name = enc.encode(f.name), data = f.data || new Uint8Array(0), crc = crc32(data);
+    const lh = cat([u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(0), u16(0x21), u32(crc), u32(data.length), u32(data.length), u16(name.length), u16(0), name]);
+    parts.push(lh, data);
+    central.push(cat([u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0x21), u32(crc), u32(data.length), u32(data.length), u16(name.length), u16(0), u16(0), u16(0), u16(0), u32(f.name.endsWith('/') ? 0x10 : 0), u32(off), name]));
+    off += lh.length + data.length;
+  });
+  const cd = cat(central);
+  return cat([...parts, cd, u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length), u32(cd.length), u32(off), u16(0)]);
+}
+
+
+
+/* ==CORE END== */
+
+// ---------------------------------------------------------------------------
+// THE PAGE. Above is the core (no screen code). Below is the user interface.
+// Names that start with "my" were written for this page.
+// ---------------------------------------------------------------------------
+const myEl = id => document.getElementById(id);
+const mySleep = ms => new Promise(r => setTimeout(r, ms));
+const myEsc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const myNat = (a, b) => a.localeCompare(b, undefined, { numeric: true });   // s2.csv before s10.csv
+const myPct = v => isNaN(v) ? '-' : (v * 100).toFixed(0) + '%';
+
+// the small state the screen is drawn from
+let myState = {
+  connection: 'none',        // 'none' | 'ble' | 'serial'
+  deviceName: '',
+  modelLocation: 'none',     // 'none' | 'phone' | 'xiao' | 'both' | 'different'
+  sampleCount: 0,
+  classes: ['0Still', '1Punch', '2Wave'],
+  calibrated: false,
+  phoneSensor: false,
+  sdFolder: '',
+  xiao: null                 // what the XIAO told us (INFO, HELLO, LBL, CAL lines)
+};
+// the bigger things
+let myLayout = Object.assign({}, DEFAULT_LAYOUT), myD = derive(myLayout);
+let myData = [];             // samples: {cls, win, src, onSD, onXiao}
+let myModel = null;          // the model in this page's memory
+let myCalib = { mean: Float32Array.from([0, 0, 1]), std: Float32Array.from([1, 1, 1]), set: false };
+let myMode = 'Sd', myHist = [], myLastTrain = null, myTraining = false, myStopFlag = false, myRevPos = 0;
+let myPhoneBuf = [], myHb = [], myHoldWin = null, myHoldUntil = 0, myPendingCal = false, myCapSaved = false;
+let myRunningPhone = false, myRunningXiao = false, myRecording = false;
+let myTx = null, myBleDev = null, myPort = null, myWriter = null, myReader = null;
+let myBleTx = null, myBleWantOpen = false, myReconnecting = false;   // v007
+const myT = ms => myState.connection === 'ble' ? ms * 2 : ms;           // v007: BLE waits are twice as long
+let mySd = { root: null, motion: null, header: null };    // folder handles of the SD card
+const myLink = new Link();
+let myBleAsm = new BleReassembler();
+
+myLink.up = () => myState.connection !== 'none';
+myLink.sendRaw = f => { if (myEl('myRaw').checked) myLog('tx ' + myHex(f)); return myTx(f); };
+myLink.onText = myOnText;
+myLink.onRxProgress = (kind, f) => { if (kind === 'M') myMsg('receiving the model ' + myPct(f)); };
+const myConnected = () => myLink.up();
+const myHex = f => Array.from(f.slice(0, 24)).map(b => b.toString(16).padStart(2, '0')).join(' ') + (f.length > 24 ? ' ... ' + f.length + ' bytes' : '');
+function myFeed(f) { if (myEl('myRaw').checked) myLog('rx ' + myHex(f)); myLink.feed(f); }
+function myMsg(text) { myEl('myMsg' + myMode).textContent = text; }
+function myLog(text) {                       // the panel message line + the console under Advanced
+  const box = myEl('myLog');
+  box.value += '[' + new Date().toLocaleTimeString() + '] ' + text + '\n'; box.scrollTop = box.scrollHeight;
+  myMsg(text);
+}
+function myShow(mode) {
+  myMode = mode;
+  for (const k of ['Sd', 'Ble', 'Ser', 'Phone']) { myEl('myPanel' + k).hidden = k !== mode; myEl('myBtn' + k).style.outline = k === mode ? '4px solid' : ''; }
+  // v007: the connection, the work area and the send area are single blocks that move into the tab you are on
+  const move = (id, slot) => { const el = myEl(id), host = myEl(slot + mode); if (host) { host.appendChild(el); el.hidden = false; } else el.hidden = true; };
+  move('myPanelLink', 'myLinkSlot'); move('myPanelSend', 'mySendSlot'); move('myWork', 'myWorkSlot');
+  myEl('myConnBle').hidden = mode === 'Ser'; myEl('myConnSer').hidden = mode !== 'Ser';
+  myRender();
+}
+const myWorkModes = ['Sd', 'Ble', 'Ser'];
+
+// ---- drawing ----
+function myPlot(cv, win, caption) {
+  const g = cv.getContext('2d');
+  g.clearRect(0, 0, cv.width, cv.height);
+  if (!win || !win.length) return;
+  let lo = Math.min(...win), hi = Math.max(...win);
+  const mid = (lo + hi) / 2, half = Math.max((hi - lo) / 2, 1);              // always show at least 2 g
+  lo = mid - half; hi = mid + half;
+  const y = v => cv.height - 6 - (v - lo) / (hi - lo) * (cv.height - 12), n = win.length / 3;
+  g.strokeStyle = 'gray'; g.beginPath(); g.moveTo(0, y(0)); g.lineTo(cv.width, y(0)); g.stroke();
+  ['red', 'green', 'blue'].forEach((color, a) => {
+    g.strokeStyle = color; g.beginPath();
+    for (let t = 0; t < n; t++) g[t ? 'lineTo' : 'moveTo'](t / Math.max(n - 1, 1) * (cv.width - 1), y(win[t * 3 + a]));
+    g.stroke();
+  });
+  g.fillStyle = 'gray'; g.fillText(caption + '   ax red, ay green, az blue (g)', 4, 11);
+}
+// What the network sees: the SAME normalize() used for training, one colored cell per number.
+function myDrawStrip(cv, win) {
+  const g = cv.getContext('2d'), S = 8;
+  cv.width = myD.T * S; cv.height = 3 * S;
+  if (!win || win.length !== myD.IN) return;
+  const x = normalize(win, myModel ? myModel.mean : myCalib.mean, myModel ? myModel.std : myCalib.std, myD);
+  for (let i = 0; i < myD.IN; i++) {
+    const v = x[i] / 5, c = Math.round(255 * (1 - Math.abs(v)));
+    g.fillStyle = v > 0 ? 'rgb(255,' + c + ',' + c + ')' : 'rgb(' + c + ',' + c + ',255)';
+    g.fillRect(Math.floor(i / 3) * S, (i % 3) * S, S, S);
+  }
+}
+function myDrawLoss() {
+  for (const id of ['myCvLossSd', 'myCvLossPhone']) {
+    const cv = myEl(id), g = cv.getContext('2d'), top = Math.max(...myHist.map(h => h.loss), 1e-6), n = Math.max(myHist.length - 1, 1);
+    g.clearRect(0, 0, cv.width, cv.height);
+    [['loss', 'red', top], ['trainAcc', 'green', 1], ['valAcc', 'blue', 1]].forEach(([key, color, scale]) => {
+      g.strokeStyle = color; g.beginPath();
+      myHist.forEach((h, i) => { if (isFinite(h[key])) g[i ? 'lineTo' : 'moveTo'](i / n * (cv.width - 1), cv.height - 4 - h[key] / scale * (cv.height - 8)); });
+      g.stroke();
+    });
+    g.fillStyle = 'gray'; g.fillText('loss red, training accuracy green, validation accuracy blue', 4, 11);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RENDER: draw the whole screen from the state
+// ---------------------------------------------------------------------------
+function myBox(label, on) { return '<span style="display:inline-block;border:2px solid;padding:8px 12px;opacity:' + (on ? 1 : 0.4) + ';background:' + (on ? 'rgba(0,170,0,.35)' : 'none') + '">' + label + '</span>'; }
+
+function myRender() {
+  const names = myState.classes, x = myState.xiao, good = myData.filter(s => s.win.length === myD.IN);
+  const counts = names.map((c, i) => good.filter(s => s.cls === i).length);
+  myState.sampleCount = good.length; myState.calibrated = myCalib.set;
+  const onXiao = !!(x && x.TR);                              // where is the model?
+  myState.modelLocation = myModel && onXiao ? (x.MC === crc32(packModel(myModel)) ? 'both' : 'different') : myModel ? 'phone' : onXiao ? 'xiao' : 'none';
+  const where = { none: 'MODEL: NONE yet. Collect samples and train.', phone: 'MODEL: this page only. Send it to the XIAO.', xiao: 'MODEL: XIAO only. Get it to see it here.',
+    both: 'MODEL: this page = XIAO (the same model)', different: 'MODEL: this page is not the same as the XIAO model' }[myState.modelLocation];
+  const nm = myModel || myCalib, cal = 'mean ' + Array.from(nm.mean).map(v => v.toFixed(3)).join(', ') + '  std ' + Array.from(nm.std).map(v => v.toFixed(3)).join(', ') + (myModel || myCalib.set ? '' : '  (not set yet: training from the data sets it)');
+
+  myEl('mySdSummary').textContent = (myState.sdFolder ? myState.sdFolder + ':  ' : '') + names.length + ' classes | ' + good.length + ' samples | model ' + (myModel ? 'loaded' : 'none') + ' | calibration ' + (myCalib.set ? 'loaded' : 'none');
+  const have = !!(good.length || myModel);
+  myEl('myWork').hidden = !have || !myWorkModes.includes(myMode); myEl('mySdSave').hidden = !have;
+  myEl('mySumBle').textContent = myEl('mySumSer').textContent = names.length + ' classes | ' + good.length + ' samples on this page | model ' + (myModel ? 'loaded' : 'none');
+  myEl('myClassList').textContent = names.map((c, i) => c + '   ' + counts[i] + ' samples').join('\n');
+  const sel = myEl('myRevClass'), keep = sel.value;
+  sel.innerHTML = names.map((c, i) => '<option value="' + i + '">' + myEsc(c) + ' (' + counts[i] + ')</option>').join('');
+  if (keep !== '' && +keep < names.length) sel.value = keep;
+  if (myWorkModes.includes(myMode)) myDrawReview();
+
+  myEl('myModelBox').innerHTML = myBox('PAGE ' + (myModel ? 'model' : 'no model'), !!myModel) + ' &harr; ' + (myState.connection === 'none' ? 'not connected' : myState.connection === 'ble' ? 'BLE' : 'serial') + ' &harr; ' + myBox('XIAO ' + (onXiao ? 'model' : 'no model'), onXiao) + '<br><b>' + where + '</b>';
+  myEl('myPhoneStatus').textContent = 'Phone sensor: ' + (myState.phoneSensor ? 'ON' : 'OFF') + ' | XIAO link: ' + (myState.connection === 'none' ? 'not connected' : myState.connection + ' (' + myState.deviceName + ')');
+  myEl('myRecordButtons').innerHTML = names.map((c, i) => '<input type="button" value="Record ' + myEsc(c) + ' (' + counts[i] + ')" onclick="myRecord(' + i + ')">').join('');
+  myEl('myCalibText').textContent = cal; myEl('myCalibText2').textContent = cal;
+
+  let st = 'not connected';
+  if (myConnected()) st = !x || !x.T ? 'connected, asking the XIAO for its status ...' :
+    (x.name || myState.deviceName) + '  ' + (x.fw || '') + '\nLink: ' + (myState.connection === 'ble' ? 'BLE' + (x.MTU ? ', MTU ' + x.MTU : ', MTU unknown') + ', ' + (x.PKT || 20) + ' byte packets' + (myBleTx ? ', writes ' + myBleTx.modeText() : '') : 'USB serial') + (x.fw && x.fw !== 'firmware-v007' ? '\nWARNING: the XIAO runs ' + x.fw + ': upload firmware-v007 (BLE needs it)' : '') + '\nSD: ' + (x.SD ? 'OK' : 'NO CARD') + '\nModel: ' + (onXiao ? 'loaded' : 'none') + '\nClasses: ' + (x.labels || [x.C]).join(', ') +
+    '\nLayout: ' + x.T + ' steps, kernel ' + x.K + ', ' + x.F + ' filters, dense ' + x.D1 + '/' + x.D2 + ', ' + x.INT + ' ms' + (myXiaoDiffers() ? '\nWARNING: this page uses another layout or class names (Advanced: Adopt XIAO layout)' : '');
+  myEl('myDevStatus').textContent = st;
+  myEl('myXiaoRaw').textContent = x ? 'raw status: ' + JSON.stringify(x) : '';
+  const l = myLayout;
+  myEl('myLayoutInfo').textContent = 'layout: ' + myD.T + ' steps x 3 axes, kernel ' + l.K + ', ' + l.F + ' filters, dense ' + l.D1 + '/' + l.D2 + ', ' + l.C + ' classes, ' + l.INT + ' ms\n' +
+    'weights: ' + myD.nW + ' floats = ' + myD.nW * 4 + ' bytes (with calibration ' + myD.nPkg * 4 + ' bytes)\nmodel: ' + (myModel ? myModel.source + (myModel.unsaved ? ', NOT SAVED' : '') : 'none') +
+    '\n\nlines for the sketch:\n#define NUM_CLASSES ' + names.length + '\nString myClassLabels[NUM_CLASSES] = {' + names.map(c => '"' + c + '"').join(', ') + '};\n#define IMU_TIMESTEPS ' + l.T +
+    '\n#define SAMPLE_INTERVAL_MS ' + l.INT + '\n#define CONV1_KERNEL ' + l.K + '\n#define CONV1_FILTERS ' + l.F + '\n#define DENSE1_SIZE ' + l.D1 + '\n#define DENSE2_SIZE ' + l.D2 + '\n\nconfig.json:\n' + configJson(names, l);
+  if (document.activeElement !== myEl('myClassInput')) myEl('myClassInput').value = names.join(', ');
+}
+
+// ---------------------------------------------------------------------------
+// CLASSES AND LAYOUT
+// ---------------------------------------------------------------------------
+function myCheckNames(names) {
+  if (names.some(n => !n || n.length > 31)) return 'a class name is empty or longer than 31 characters';
+  if (names.some(n => /[\\/:*?"<>|]/.test(n) || /^[. ]|[. ]$/.test(n))) return 'a name has a forbidden character (it is a folder name on a FAT card)';
+  if (new Set(names.map(n => n.toLowerCase())).size !== names.length) return 'two classes have the same name';
+  return '';
+}
+// Change layout and/or class names. A different layout discards the model (its numbers would not fit).
+function myApply(layout, names) {
+  const nl = Object.assign({}, layout, { C: names.length }), nd = derive(nl);
+  if (myModel && !sameLayout(myModel.d, nd)) { myModel = null; myLog('the layout changed: the model in memory was discarded'); }
+  myLayout = nl; myD = nd; myState.classes = names;
+  myData = myData.filter(x => x.cls < names.length); myLastTrain = null; myHist = [];
+}
+function myApplyClassNames() {
+  const names = myEl('myClassInput').value.split(',').map(s => s.trim());
+  const bad = myCheckNames(names) || layoutError(Object.assign({}, myLayout, { C: names.length }));
+  if (bad) return myLog('class names not changed: ' + bad);
+  if (names.length < myState.classes.length && !confirm('Fewer classes: the samples of the removed classes are dropped from the page. Continue?')) return;
+  myApply(myLayout, names); myRender();
+  myLog('classes: ' + names.join(', ') + '. The number of classes is set in the sketch: copy the lines under Classes and layout.');
+}
+
+// ---------------------------------------------------------------------------
+// SD CARD (desktop Chrome and Edge can read and write the folder; other browsers can only read it)
+// ---------------------------------------------------------------------------
+const myHdrFiles = ['config.json', 'myCalib.bin', 'myMotionWeights.bin'];
+const myReadBytes = async fh => new Uint8Array(await (await fh.getFile()).arrayBuffer());
+async function myWriteFile(dir, name, bytes) { const w = await (await dir.getFileHandle(name, { create: true })).createWritable(); await w.write(bytes); await w.close(); }
+async function mySubDir(h, name) { try { return await h.getDirectoryHandle(name); } catch (e) { return null; } }
+
+async function myChooseSD() {
+  if (!window.showDirectoryPicker) { myEl('myFolderInput').click(); return; }
+  try {
+    const h = await window.showDirectoryPicker({ id: 'xiao-sd', mode: 'readwrite' }), low = h.name.toLowerCase();
+    if (low === 'motion') mySd.motion = h;
+    else if (low === 'header') mySd.header = h;
+    else mySd = { root: h, motion: await mySubDir(h, 'motion'), header: await mySubDir(h, 'header') };
+    await myReadSD();
+  } catch (e) {
+    if (e.name !== 'AbortError') myLog('could not open that folder: ' + e.message + '. If Chrome refuses the top of the card: choose the motion folder, then press Choose SD Card again and choose the header folder.');
+  }
+}
+async function myReadSD() {
+  myLog('reading the SD card ...');
+  try {
+    const ents = [];
+    if (mySd.header) for await (const [n, h] of mySd.header.entries()) {
+      const name = myHdrFiles.find(f => f.toLowerCase() === n.toLowerCase());
+      if (h.kind === 'file' && name) ents.push({ name: 'header/' + name, data: await myReadBytes(h) });
+    }
+    if (mySd.motion) for await (const [cn, ch] of mySd.motion.entries()) {
+      if (ch.kind !== 'directory' || cn[0] === '.') continue;
+      ents.push({ name: 'motion/' + cn + '/', data: new Uint8Array(0) });          // keeps an empty class folder
+      for await (const [fn, fh] of ch.entries())
+        if (fh.kind === 'file' && /\.csv$/i.test(fn) && fn[0] !== '.') ents.push({ name: 'motion/' + cn + '/' + fn, data: await myReadBytes(fh) });
+    }
+    myState.sdFolder = mySd.root ? mySd.root.name : [mySd.motion && 'motion', mySd.header && 'header'].filter(Boolean).join(' + ');
+    await myLoadEntries(ents, 'SD card');
+    if (!mySd.motion || !mySd.header) myLog('only ' + (mySd.motion ? 'motion' : 'header') + ' was found: press Choose SD Card again and choose the other folder');
+  } catch (e) { myLog('reading the SD card failed: ' + e.message); }
+}
+async function myReadFolderInput(inp) {              // Firefox and Safari: read only
+  const ents = [];
+  for (const f of Array.from(inp.files)) {
+    const m = /(?:^|\/)(motion\/[^/]+\/[^/.][^/]*\.csv|header\/(?:config\.json|myCalib\.bin|myMotionWeights\.bin))$/i.exec(f.webkitRelativePath || '');
+    if (m) ents.push({ name: m[1], data: new Uint8Array(await f.arrayBuffer()) });
+  }
+  inp.value = '';
+  if (!ents.length) return myLog('no motion or header files found: choose the top folder of the SD card');
+  mySd = { root: null, motion: null, header: null }; myState.sdFolder = 'folder (read only)';
+  await myLoadEntries(ents, 'folder');
+  myLog('this browser cannot write to the card: use Download SD-ready ZIP');
+}
+
+// ents = [{name: 'motion/<class>/sN.csv' | 'motion/<class>/' | 'header/<file>', data}]
+async function myLoadEntries(ents, label) {
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase(), find = n => ents.find(e => same(e.name, n));
+  let names = null, layout = myLayout;
+  const cfg = find('header/config.json');                     // class names and layout
+  if (cfg) try {
+    const j = JSON.parse(new TextDecoder().decode(cfg.data));
+    if (Array.isArray(j.classes)) names = j.classes.map(String);
+    layout = { T: j.timesteps || layout.T, K: j.kernel || layout.K, F: j.filters || layout.F, D1: j.dense1 || layout.D1, D2: j.dense2 || layout.D2, INT: j.interval_ms || layout.INT };
+  } catch (e) { myLog('config.json is not valid JSON: ignored'); }
+  const csvRe = /^motion\/([^/]+)\/([^/.][^/]*\.csv)$/i;      // class folders and sample files
+  const csvs = ents.map(e => ({ e, m: csvRe.exec(e.name) })).filter(x => x.m).sort((a, b) => myNat(a.m[1], b.m[1]) || myNat(a.m[2], b.m[2]));
+  const folders = [...new Set([...csvs.map(x => x.m[1]), ...ents.filter(e => /^motion\/[^/]+\/$/.test(e.name)).map(e => e.name.split('/')[1])])].sort(myNat);
+  if (names) names = names.concat(folders.filter(f => !names.some(c => same(c, f))));
+  else names = folders.length >= 2 ? folders : myState.classes;
+  const bad = myCheckNames(names) || layoutError(Object.assign({}, layout, { C: names.length }));
+  if (bad) return myLog('cannot use the ' + label + ': ' + bad);
+  if ((myData.some(x => !x.onSD && !x.onXiao) || (myModel && myModel.unsaved)) && !confirm('Loading the ' + label + ' replaces the samples and model now on the page, and some are not saved. Continue?')) return;
+
+  myApply(layout, names);
+  myData = csvs.map(x => ({ cls: names.findIndex(c => same(c, x.m[1])), win: csvToWin(new TextDecoder().decode(x.e.data)), src: 'sd', onSD: true, onXiao: false }));
+  myRevPos = 0; myModel = null;
+  const cal = find('header/myCalib.bin'), wts = find('header/myMotionWeights.bin');
+  if (cal && cal.data.length === 24) { const f = toFloats(cal.data); myCalib = { mean: f.slice(0, 3), std: f.slice(3), set: true }; }
+  if (wts) try {
+    myModel = loadWeightsFile(wts.data, myD); myModel.source = 'from the ' + label; myModel.mean = myCalib.mean.slice(); myModel.std = myCalib.std.slice(); myModel.normOk = !!cal;
+    if (!cal) myLog('warning: no myCalib.bin on the card, so this model cannot be used properly yet');
+  } catch (e) { myLog('weights refused: ' + e.message); }
+  const wrong = myData.filter(x => x.win.length !== myD.IN).length;
+  myRender(); myAnalyze();
+  myLog(label + ' loaded: ' + (myData.length - wrong) + ' samples in ' + names.length + ' classes' + (wrong ? ', ' + wrong + ' ignored (wrong length)' : ''));
+}
+
+async function mySaveSD() {
+  if (!window.showDirectoryPicker) { myLog('this browser cannot write to a folder: here is the SD-ready ZIP instead'); return mySaveZip(); }
+  if (!mySd.root && !mySd.motion && !mySd.header) return myLog('choose the SD card first (step 1)');
+  if (myTraining) return myLog('wait until training has finished');
+  try {
+    const enc = new TextEncoder(), done = [];
+    const md = mySd.motion || (mySd.root && await mySd.root.getDirectoryHandle('motion', { create: true }));
+    const hd = mySd.header || (mySd.root && await mySd.root.getDirectoryHandle('header', { create: true }));
+    if (md) {                                                   // new samples only, as the next free sN.csv: nothing is ever overwritten
+      let added = 0;
+      for (let c = 0; c < myState.classes.length; c++) {
+        const cd = await md.getDirectoryHandle(myState.classes[c], { create: true }), have = new Set();
+        for await (const [n] of cd.entries()) have.add(n.toLowerCase());
+        let k = 0;
+        for (const x of myData.filter(s => s.cls === c && !s.onSD && !s.onXiao && s.win.length === myD.IN)) {
+          while (have.has('s' + k + '.csv')) k++;
+          await myWriteFile(cd, 's' + k + '.csv', enc.encode(winToCsv(x.win))); have.add('s' + k + '.csv'); x.onSD = true; added++;
+        }
+      }
+      done.push(added + ' new samples');
+    } else myLog('the motion folder was not found: samples not saved');
+    if (hd) {
+      await myWriteFile(hd, 'config.json', enc.encode(configJson(myState.classes, myLayout))); done.push('config.json');
+      if (myModel) {                                            // weights and calibration are always saved together
+        await myWriteFile(hd, 'myMotionWeights.bin', weightsBytes(myModel)); await myWriteFile(hd, 'myCalib.bin', calibBytes(myModel));
+        myModel.unsaved = false; done.push('weights, calibration');
+      } else myLog('no model yet: the weights already on the card were left as they are');
+    } else myLog('the header folder was not found: config and model not saved');
+    myRender(); myLog('saved to the SD card: ' + done.join(', ') + '. Put the card back in the XIAO and reboot it.');
+  } catch (e) { myLog('saving failed: ' + e.message + ' (choose the SD card again and retry)'); }
+}
+
+function mySaveZip() {
+  const enc = new TextEncoder(), files = [{ name: 'motion/' }, { name: 'header/' }], next = {};
+  myState.classes.forEach(c => files.push({ name: 'motion/' + c + '/' }));
+  if (myModel) { files.push({ name: 'header/myMotionWeights.bin', data: weightsBytes(myModel) }, { name: 'header/myCalib.bin', data: calibBytes(myModel) }); myModel.unsaved = false; }
+  else if (myCalib.set) files.push({ name: 'header/myCalib.bin', data: calibBytes(myCalib) });
+  files.push({ name: 'header/config.json', data: enc.encode(configJson(myState.classes, myLayout)) });
+  myData.filter(x => x.win.length === myD.IN).forEach(x => {
+    next[x.cls] = next[x.cls] || 0;
+    files.push({ name: 'motion/' + myState.classes[x.cls] + '/s' + next[x.cls]++ + '.csv', data: enc.encode(winToCsv(x.win)) });
+  });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([zipStore(files)], { type: 'application/zip' })); a.download = 'xiao-motion-sd.zip';
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  myLog('ZIP saved. Unzip it onto the SD card (motion and header at the top), put the card in the XIAO and reboot it.');
+  myRender();
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW, TRAIN, ANALYZE (in the browser, with the pure JavaScript network from the core)
+// ---------------------------------------------------------------------------
+const myRevList = () => myData.filter(x => x.cls === +myEl('myRevClass').value && x.win.length === myD.IN);
+function myRevStep(k) { myRevPos += k; myDrawReview(); }
+function myDrawReview() {
+  const list = myRevList(), info = myEl('myRevInfo'), pred = myEl('myRevPred');
+  myRevPos = Math.max(0, Math.min(list.length - 1, myRevPos));
+  const x = list[myRevPos];
+  myPlot(myEl('myCvRev'), x && x.win, 'sample'); myDrawStrip(myEl('myCvRevM'), x && x.win);
+  info.textContent = x ? 'sample ' + (myRevPos + 1) + ' of ' + list.length + ' (' + x.src + ')' : 'no samples in this class';
+  pred.textContent = '';
+  if (!x || !myModel || !sameLayout(myModel.d, myD)) return;
+  const p = forward(myModel, normalize(x.win, myModel.mean, myModel.std, myD)).probs;
+  pred.textContent = 'The model says: ' + myState.classes[argmax(p)] + '   (' + Array.from(p).map((v, i) => myState.classes[i] + ' ' + myPct(v)).join(', ') + ')';
+}
+
+function myTrainSay(text) { myEl('myTrainSd').textContent = text; myEl('myTrainPhone').textContent = text; }
+async function myTrain() {
+  if (myTraining) return;
+  const items = myData.filter(x => x.win.length === myD.IN);
+  if (myState.classes.some((c, i) => !items.some(x => x.cls === i))) return myLog('every class needs at least one sample');
+  const fromData = myEl('myNormMode').value === 'data';          // v006
+  if (!fromData && !myCalib.set && !confirm('There is no still calibration yet. The page would use mean 0,0,1 and std 1, which the XIAO never does. Train anyway?')) return;
+  const fresh = !myModel || myEl('myFresh').checked || !sameLayout(myModel.d, myD);
+  if (fresh) { myModel = newModel(myD); myModel.source = 'trained in this page'; }
+  else myLog('continuing from the model in memory (' + myModel.source + ')');
+  const keepNorm = !fresh && myModel.normOk;                    // v007: a model that keeps improving keeps the normalization its weights know
+  if (!fromData) { myModel.mean = Float32Array.from(myCalib.mean); myModel.std = Float32Array.from(myCalib.std); }
+  myTraining = true; myStopFlag = false; myHist = [];
+  const cfg = { lr: +myEl('myLr').value || 0.001, batch: Math.max(1, +myEl('myBatch').value || 6), epochs: Math.max(1, +myEl('myEpochs').value || 30), valN: Math.max(0, +myEl('myVal').value || 0), normFromData: fromData && !keepNorm };
+  myLog('training on ' + items.length + ' samples for ' + cfg.epochs + ' epochs ...');
+  const res = await trainModel(myModel, items, cfg, {
+    stop: () => myStopFlag, tick: yieldTick, log: myLog,
+    onEpoch: e => {
+      myHist.push(e); myDrawLoss();
+      myTrainSay('epoch ' + e.ep + ' of ' + e.epochs + '   loss ' + e.loss.toFixed(3) + '   training ' + myPct(e.trainAcc) + '   validation ' + myPct(e.valAcc));
+    }
+  });
+  myTraining = false; myLastTrain = res; myModel.unsaved = true; myModel.normOk = true;
+  if (fromData || keepNorm) myCalib = { mean: myModel.mean.slice(), std: myModel.std.slice(), set: true };   // v006: show what the model uses
+  myRender();
+  const score = myAnalyze();
+  myTrainSay((res.stopped ? 'stopped. ' : 'done. ') + score);
+  myLog(res.stopped ? 'training stopped: the model stays in memory and is not saved' : 'training complete. ' + score);
+}
+
+function myAnalyze() {
+  const out = myEl('myScore'), names = myState.classes;
+  myEl('myConfusion').innerHTML = '';
+  if (!myModel || !sameLayout(myModel.d, myD)) { out.textContent = 'No model yet: train one first.'; return ''; }
+  const useAll = myEl('myEvalSet').value === 'all' || !myLastTrain;
+  const items = (useAll ? myData : myLastTrain.split.val).filter(x => x.win.length === myD.IN);
+  if (!items.length) { out.textContent = 'No samples to test on (is "validation samples per class" 0?).'; return ''; }
+  const ev = evaluate(myModel, items), st = perClassStats(ev.cm), right = ev.preds.filter(p => p.p === p.it.cls).length;
+  const score = 'Accuracy ' + myPct(right / items.length) + ' (' + right + ' of ' + items.length + ' ' + (useAll ? 'samples' : 'validation samples') + ')';
+  out.textContent = score;
+  let h = '<table border="1" cellpadding="4"><tr><th>true \\ predicted</th>' + names.map(c => '<th>' + myEsc(c) + '</th>').join('') + '<th>found</th></tr>';
+  ev.cm.forEach((row, i) => { h += '<tr><td>' + myEsc(names[i]) + '</td>' + row.map((v, j) => '<td' + (i === j ? ' style="font-weight:bold;background:rgba(0,170,0,.3)"' : '') + '>' + v + '</td>').join('') + '<td>' + myPct(st[i].recall) + '</td></tr>'; });
+  myEl('myConfusion').innerHTML = h + '<tr><td>right when predicted</td>' + st.map(s => '<td>' + myPct(s.precision) + '</td>').join('') + '<td></td></tr></table>';
+  return score;
+}
+
+// ---------------------------------------------------------------------------
+// PHONE SENSOR (DeviceMotion)
+// ---------------------------------------------------------------------------
+const myIsIOS = () => typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function';
+const myMapNow = () => ['myMapX', 'myMapY', 'myMapZ'].map(id => myEl(id).value);
+function myOnMotion(e) {
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x == null) return;
+  myPhoneBuf.push({ t: performance.now(), x: a.x, y: a.y, z: a.z });
+  if (myPhoneBuf.length > 600) myPhoneBuf.shift();
+}
+async function myEnablePhone() {
+  if (typeof DeviceMotionEvent === 'undefined') return myLog('this browser has no motion sensor');
+  try { if (myIsIOS() && (await DeviceMotionEvent.requestPermission()) !== 'granted') return myLog('motion permission was not granted'); }
+  catch (e) { return myLog('motion permission failed: ' + e.message); }
+  window.ondevicemotion = myOnMotion;
+  myState.phoneSensor = true; myRender(); myLog('phone sensor on (it needs https or localhost)');
+}
+function myPhoneWindow(end) {                        // the window that ends at time `end`: {win, ok, why}
+  const t0 = end - (myD.T - 1) * myD.INT, map = myMapNow();
+  return resampleWindow(myPhoneBuf.filter(e => e.t >= t0 - 150 && e.t <= end + 100).map(e => mapPhone(e, map)), t0, myD);
+}
+async function myCheckFlat() {
+  if (!myState.phoneSensor) return myLog('enable the phone sensor first');
+  const t0 = performance.now(), map = myMapNow();
+  myLog('hold still ...'); await mySleep(600);
+  const ev = myPhoneBuf.filter(e => e.t >= t0).map(e => mapPhone(e, map));
+  if (!ev.length) return myLog('no motion events arrived');
+  const z = ev.reduce((s, e) => s + e.z, 0) / ev.length;
+  if (z < -0.5) {
+    for (const id of ['myMapX', 'myMapY', 'myMapZ']) { const v = myEl(id).value; myEl(id).value = v[0] === '-' ? v.slice(1) : '-' + v; }
+    myLog('Z read ' + z.toFixed(2) + ' g, so all three signs were flipped. Check again.');
+  } else myLog(z > 0.5 ? 'Z reads +' + z.toFixed(2) + ' g when flat: the signs are right.' : 'Z reads ' + z.toFixed(2) + ' g: lay the phone flat, face up, and try again.');
+}
+async function myCalibratePhone() {
+  if (!myState.phoneSensor) return myLog('enable the phone sensor first');
+  myLog('keep the phone still ...'); await mySleep((myD.T - 1) * myD.INT + 300);
+  const r = myPhoneWindow(performance.now());
+  if (!r.ok) return myLog('calibration failed: ' + r.why);
+  const c = calibFromWindow(r.win, myD);
+  myCalib = { mean: c.mean, std: c.std, set: true }; myRender(); myLog('calibrated from the still phone');
+}
+function myLiveTick() {                              // a few times a second: the live traces
+  if (myMode === 'Phone' && myState.phoneSensor) {
+    const map = myMapNow(), ev = myPhoneBuf.slice(-80).map(e => mapPhone(e, map)), last = ev[ev.length - 1];
+    if (last) myEl('myLiveAxes').textContent = last.x.toFixed(2) + ', ' + last.y.toFixed(2) + ', ' + last.z.toFixed(2);
+    if (Date.now() < myHoldUntil) myPlot(myEl('myCvLive'), myHoldWin, 'sample just recorded');
+    else myPlot(myEl('myCvLive'), ev.flatMap(e => [e.x, e.y, e.z]), 'live phone sensor');
+  }
+  if (myMode === 'Ser' && myHb.length) myPlot(myEl('myCvHb'), myHb.flat(), 'live XIAO sensor');
+}
+
+// ---------------------------------------------------------------------------
+// LINK TO THE XIAO: BLE (phone) or Serial (desktop). Same frames, see the core.
+// ---------------------------------------------------------------------------
+const MY_BLE = { SVC: '7e600001-b2c3-5d4e-af60-9b3c7d8eaf20', CMD: '7e600002-b2c3-5d4e-af60-9b3c7d8eaf20', EVT: '7e600003-b2c3-5d4e-af60-9b3c7d8eaf20' };
+function myBleWriteMode() { if (myBleTx) { myBleTx.mode = myEl('myBleWrite').value; myBleTx.forceResp = false; } myRender(); }
+// v007: connect (up to 3 tries: desktop Chrome often fails the first one), subscribe BEFORE the first command, one write queue
+async function myBleOpen() {
+  let last;
+  for (let a = 1; a <= 3; a++) {
+    try {
+      const srv = await myBleDev.gatt.connect();
+      await mySleep(400);                                   // let the link settle before service discovery
+      const svc = await srv.getPrimaryService(MY_BLE.SVC);
+      const cmd = await svc.getCharacteristic(MY_BLE.CMD), evt = await svc.getCharacteristic(MY_BLE.EVT);
+      myBleAsm = new BleReassembler();
+      evt.oncharacteristicvaluechanged = e => { const v = e.target.value, f = myBleAsm.push(new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength))); if (f) myFeed(f); };
+      await evt.startNotifications();
+      myBleTx = new BleTx((p, nr) => nr && cmd.writeValueWithoutResponse ? cmd.writeValueWithoutResponse(p) : (cmd.writeValueWithResponse ? cmd.writeValueWithResponse(p) : cmd.writeValue(p)), mySleep);
+      myBleTx.canNoResp = !!(cmd.properties && cmd.properties.writeWithoutResponse && cmd.writeValueWithoutResponse);
+      myBleTx.isGone = () => !myBleDev || !myBleDev.gatt.connected;
+      myBleTx.mode = myEl('myBleWrite').value;
+      myLink.ackMs = myAckMs(20);
+      myTx = f => myBleTx.send(f);
+      return;
+    } catch (e) { last = e; try { myBleDev.gatt.disconnect(); } catch (x) { /* ignore */ } if (a < 3) { myLog('BLE connect attempt ' + a + ' failed (' + e.message + '), trying again ...'); await mySleep(600 * a); } }
+  }
+  throw last;
+}
+const myAckMs = pkt => Math.min(15000, 3000 + 4 * Math.ceil(164 / Math.max(pkt - 1, 8)) * 120);   // longer for tiny packets
+function myBleDropped() {
+  const was = myState.connection === 'ble';
+  myState.connection = 'none'; myState.xiao = null; myTx = null; myRunningXiao = false; myLink.rx = null;
+  myLink.dropWaiters('the BLE link dropped'); myRender();
+  if (was) myLog('BLE disconnected');
+  if (was && myBleWantOpen && !myReconnecting) myBleReconnect();
+}
+async function myBleReconnect() {
+  myReconnecting = true;
+  for (let a = 1; a <= 3 && myBleWantOpen; a++) {
+    myLog('BLE link dropped: reconnecting (' + a + ' of 3) ...'); await mySleep(1500 * a);
+    try { await myBleOpen(); myState.connection = 'ble'; myState.xiao = null; myRender(); myLog('BLE reconnected'); myReconnecting = false; await myAfterConnect(); return; }
+    catch (e) { /* next try */ }
+  }
+  myReconnecting = false; myLog('BLE could not reconnect: press Connect BLE');
+}
+async function myConnectBle() {
+  if (!navigator.bluetooth) return myLog('Web Bluetooth is not available here. Use Chrome on Android, Chrome or Edge on a computer, or Bluefy on iPhone.');
+  try {
+    if (myConnected()) await myDisconnect();
+    myBleDev = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'XIAO-Motion' }], optionalServices: [MY_BLE.SVC] });
+    myBleDev.addEventListener('gattserverdisconnected', myBleDropped);
+    myBleWantOpen = true;
+    await myBleOpen();
+    myState.connection = 'ble'; myState.deviceName = myBleDev.name; myState.xiao = null;
+    myRender(); myLog('connected to ' + myBleDev.name);
+    await myAfterConnect();
+  } catch (e) { myBleWantOpen = false; myLog('BLE connect failed: ' + e.message); }
+}
+async function myConnectSerial() {
+  if (!navigator.serial) return myLog('Web Serial is not available here. Use Chrome or Edge on a computer.');
+  try {
+    if (myConnected()) await myDisconnect();
+    myPort = await navigator.serial.requestPort();
+    await myPort.open({ baudRate: 115200, bufferSize: 65536 });   // v007: the default 255 byte buffer overruns while the page is busy
+    myWriter = myPort.writable.getWriter(); myReader = myPort.readable.getReader();
+    myTx = f => myWriter.write(new TextEncoder().encode('@B ' + b64enc(f) + '\n'));      // a frame travels as one "@B base64" line
+    myState.connection = 'serial'; myState.deviceName = 'XIAO (serial)'; myState.xiao = null;
+    myRender(); myLog('serial connected');
+    mySerialLoop();                                                                       // keeps reading in the background
+    await myAfterConnect();
+  } catch (e) { myLog('serial connect failed: ' + e.message + '. Close the Arduino serial monitor first.'); }
+}
+function myMonitorAdd(s) {
+  const box = myEl('myMon');
+  box.value += s; if (box.value.length > 20000) box.value = box.value.slice(-15000);
+  box.scrollTop = box.scrollHeight;
+}
+async function mySerialLoop() {
+  const dec = new TextDecoder(), parser = new SerialParser(myFeed, myMonitorAdd);   // "@B ..." lines are frames, the rest is monitor text
+  const soft = ['BufferOverrunError', 'FramingError', 'ParityError', 'BreakError'];
+  for (;;) {
+    try { for (;;) { const r = await myReader.read(); if (r.done) break; parser.push(dec.decode(r.value, { stream: true })); } break; }
+    catch (e) {
+      if (soft.includes(e.name) && myPort && myPort.readable) {                      // v007: a few bytes were lost; keep going, the protocol resends
+        myLog('serial: ' + e.name + ' (some bytes were lost, the transfer resends them)');
+        try { myReader.releaseLock(); } catch (x) { /* ignore */ }
+        myReader = myPort.readable.getReader(); continue;
+      }
+      myLog('serial reading ended: ' + e.message); break;
+    }
+  }
+  try { myReader.releaseLock(); myWriter.releaseLock(); await myPort.close(); } catch (e) { /* already closed */ }
+  myPort = null; myReader = null; myWriter = null; myTx = null; myLink.dropWaiters('the serial port closed');
+  myState.connection = 'none'; myState.xiao = null; myRender(); myLog('serial disconnected');
+}
+async function myDisconnect() {
+  myRunningXiao = false; myBleWantOpen = false;
+  try { if (myBleDev && myBleDev.gatt.connected) myBleDev.gatt.disconnect(); } catch (e) { /* ignore */ }
+  if (myReader) {                                    // the serial loop closes the port after this
+    try { await myReader.cancel(); } catch (e) { /* ignore */ }
+    for (let i = 0; i < 20 && myPort; i++) await mySleep(50);
+  }
+  myState.connection = 'none'; myState.xiao = null; myTx = null; myRender();
+}
+async function mySerialSend() {
+  if (myState.connection !== 'serial') return myLog('press Connect Serial first');
+  const t = myEl('myMonIn').value;
+  try {
+    if (t[0] === '!') await myLink.cmd(t.slice(1)); else await myWriter.write(new TextEncoder().encode(t + '\n'));
+    myMonitorAdd('> ' + t + '\n'); myEl('myMonIn').value = '';
+  } catch (e) { myLog('send failed: ' + e.message); }
+}
+
+// Ask the XIAO and wait for its answer. The waiter is set up BEFORE sending, so a fast answer is never missed.
+async function myDo(action, prefix, ms) {
+  const p = myLink.waitText(prefix, myT(ms || 4000), true);          // v006: the timer starts after the action (a slow transfer) is done
+  try { await action(); } catch (e) { myLink.dropWaiters(); try { await p; } catch (x) { /* rejected on purpose */ } throw e; }
+  p.arm();
+  return await p;
+}
+const myAsk = (cmd, prefix, ms) => myDo(() => myLink.cmd(cmd), prefix, ms);
+function myNoteXfer(label, bytes, ms, bad) {
+  myEl('myXferInfo').textContent = 'last transfer: ' + label + ', ' + bytes + ' bytes in ' + (ms / 1000).toFixed(1) + ' s (' + (bytes / Math.max(ms, 1)).toFixed(1) + ' kB/s), ' + bad + ' resend(s)' + (myBleTx ? ', BLE write retries ' + myBleTx.retries : '');
+}
+async function myAskBlob(cmd, kind, test, ms) {
+  const p = myLink.waitBlob(kind, myT(ms || 9000), test);
+  try { await myLink.cmd(cmd); } catch (e) { myLink.dropWaiters(); try { await p; } catch (x) { /* rejected on purpose */ } throw e; }
+  return await p;
+}
+
+function myOnText(s) {                               // every text line the XIAO sends
+  if (s.startsWith('HB ')) {                         // live sensor line (only while asked for)
+    const p = s.split(' ').slice(1).map(Number);
+    myHb.push(p); if (myHb.length > 80) myHb.shift();
+    myEl('myHbText').textContent = 'ax ay az (g): ' + p.map(v => v.toFixed(2)).join('  ');
+    return;
+  }
+  if (s.startsWith('EP ')) {                          // v006: one line per epoch while the XIAO trains
+    const p = s.split(' ').slice(1).map(Number);
+    myHist.push({ ep: p[0], epochs: p[1], loss: p[2], trainAcc: p[3] / 100, valAcc: p[4] / 100 }); myDrawLoss();
+    myTrainSay('XIAO epoch ' + p[0] + ' of ' + p[1] + '   loss ' + p[2].toFixed(3) + '   training ' + p[3].toFixed(0) + '%   validation ' + p[4].toFixed(0) + '%');
+    return;
+  }
+  if (s.startsWith('INFO ')) {
+    const o = {};
+    s.slice(5).split(' ').forEach(kv => { const p = kv.split('='); o[p[0]] = +p[1]; });
+    myState.xiao = o;
+    if (o.PKT && myBleTx && myState.connection === 'ble') { myBleTx.pkt = Math.max(20, Math.min(169, o.PKT)); myLink.ackMs = myAckMs(myBleTx.pkt); }   // v007: size the packets to the live link
+    return;
+  }
+  const o = myState.xiao = myState.xiao || {};
+  if (s.startsWith('HELLO ')) { const p = s.split(' '); o.name = p[1]; o.fw = p[2]; }
+  else if (s.startsWith('LBL ')) o.labels = s.slice(4).split(',');
+  else if (s.startsWith('LST ')) o.counts = s.slice(4).trim().split(' ').map(Number);
+  else if (s.startsWith('CAL ')) { o.cal = s.slice(4).split(' ').map(Number); myStatusDone(); }       // CAL is the last line of a status
+  else {
+    if (s.startsWith('OK cap')) myCapSaved = true;
+    myLog('XIAO: ' + s);
+    if (myState.connection === 'serial') myMonitorAdd('[XIAO reply] ' + s + '\n');
+  }
+}
+function myStatusDone() {
+  if (!myCalib.set || myPendingCal) { myUseXiaoCal(); myPendingCal = false; }
+  if (myData.length === 0 && myXiaoDiffers()) myAdoptXiao();      // nothing to lose: follow the XIAO
+  myRender();
+}
+function myXiaoDiffers() {
+  const o = myState.xiao;
+  if (!o || !o.T) return false;
+  const sameSize = sameLayout({ T: o.T, K: o.K, F: o.F, D1: o.D1, D2: o.D2, C: o.C }, myLayout) && o.INT === myLayout.INT;
+  return !(sameSize && (!o.labels || o.labels.join('|') === myState.classes.join('|')));
+}
+function myAdoptXiao() {
+  const o = myState.xiao;
+  if (!o || !o.T) return myLog('no XIAO status yet: press Refresh status');
+  const names = o.labels && o.labels.length === o.C ? o.labels : Array.from({ length: o.C }, (v, i) => myState.classes[i] || 'class' + i);
+  const nl = { T: o.T, K: o.K, F: o.F, D1: o.D1, D2: o.D2, C: o.C, INT: o.INT }, bad = layoutError(nl);
+  if (bad) return myLog('cannot adopt the XIAO layout: ' + bad);
+  myApply(nl, names); myRender(); myLog('now using the XIAO layout and class names');
+}
+function myUseXiaoCal() {
+  const o = myState.xiao;
+  if (!o || !o.cal) return myLog('no XIAO calibration yet: press Refresh status');
+  myCalib = { mean: Float32Array.from(o.cal.slice(0, 3)), std: Float32Array.from(o.cal.slice(3)), set: true }; myRender();
+}
+async function myCalibrateXiao() {
+  if (!myConnected()) return myLog('connect the XIAO first');
+  myPendingCal = true; myLog('keep the XIAO still for about 3 seconds ...');
+  try { await myAsk('CALIB', 'CAL ', 9000); } catch (e) { myLog('calibration failed: ' + e.message); }
+}
+async function myRefreshStatus() {
+  if (!myConnected()) return myLog('connect first');
+  try { await myAsk('STATUS', 'CAL ', 4000); } catch (e) { myLog('status failed: ' + e.message); }
+}
+const myWantDebug = () => myEl('myLiveBox').checked || myEl('myParity').checked;
+async function myDebugSync() {                       // the XIAO sends live sensor lines only while asked (every few seconds)
+  if (!myEl('myLiveBox').checked) myHb = [];
+  if (!myConnected()) return;
+  try { await myLink.cmd(myWantDebug() ? 'DBG 1' : 'DBG 0'); } catch (e) { myLog('could not reach the XIAO: ' + e.message); }
+}
+async function myAfterConnect() {                   // v007: the XIAO may still be booting (serial) or settling (BLE): ask up to 4 times
+  await mySleep(300);
+  for (let a = 1; a <= 4 && myConnected(); a++) {
+    try { await myAsk('STATUS', 'CAL ', 4000); await myDebugSync(); return; }
+    catch (e) { if (a < 4) { myLog('no status yet (' + e.message + '), asking again ...'); await mySleep(800 * a); } else myLog('status failed: ' + e.message + '. Is the XIAO running firmware-v007?'); }
+  }
+}
+async function myTick() {                            // every 5 seconds
+  if (myLink.watchdog()) myLog('a stalled incoming transfer was dropped');
+  if (myConnected() && myWantDebug()) { try { await myLink.cmd('DBG 1'); } catch (e) { /* the status shows it */ } }
+}
+
+// ---------------------------------------------------------------------------
+// COLLECT (phone sensor or XIAO sensor), SEND SAMPLES, SEND AND GET THE MODEL
+// ---------------------------------------------------------------------------
+function myAddSample(cls, win, src, onXiao) {
+  myData.push({ cls, win, src, onSD: false, onXiao: !!onXiao });
+  myHoldWin = win; myHoldUntil = Date.now() + 2500;
+  myRender(); myLog('recorded ' + myState.classes[cls] + ' sample ' + myData.filter(x => x.cls === cls).length);
+}
+async function myRecord(cls) {
+  if (myRecording) return;
+  const fromPhone = myEl('mySource').value === 'phone';
+  if (fromPhone ? !myState.phoneSensor : !myConnected()) return myLog(fromPhone ? 'press Enable phone sensor first' : 'connect the XIAO first');
+  myRecording = true;
+  try {
+    myLog('get ready ...'); await mySleep(Math.max(0, +myEl('myDelay').value || 0)); myLog('recording now ...');
+    if (fromPhone) {
+      await mySleep((myD.T - 1) * myD.INT + 120);
+      const r = myPhoneWindow(performance.now() - 120);
+      if (!r.ok) myLog('warning: ' + r.why);
+      myAddSample(cls, r.win, 'phone');
+    } else {
+      myCapSaved = false;
+      const b = await myAskBlob('CAPTURE ' + cls, 'S', x => x.id === cls, 9000);
+      if (!b.ok) throw new Error('CRC error');
+      myAddSample(cls, toFloats(b.bytes), 'xiao', myCapSaved);
+    }
+  } catch (e) { myLog('recording failed: ' + e.message); }
+  myRecording = false;
+}
+function myDeleteLast() {
+  const x = myData[myData.length - 1];
+  if (!x) return myLog('no samples');
+  if (x.onSD) return myLog('the last sample is a file on the SD card: delete the file on the card');
+  myData.pop(); myRender(); myLog('last sample deleted from the page');
+}
+async function myPushSamples() {
+  if (!myConnected()) return myLog('connect the XIAO first');
+  const todo = myData.filter(x => x.win.length === myD.IN && !x.onSD && !x.onXiao);
+  if (!todo.length) return myLog('nothing to send: every sample is already on a card');
+  try {
+    for (const x of todo) {
+      await myDo(() => myLink.sendBlob('S', x.cls, new Uint8Array(x.win.buffer, x.win.byteOffset, x.win.byteLength)), 'OK put', 5000);
+      x.onXiao = true; myMsg('sent ' + todo.filter(s => s.onXiao).length + ' of ' + todo.length + ' samples');
+    }
+    myRender(); myLog('sent ' + todo.length + ' samples to the XIAO SD card');
+  } catch (e) { myLog('sending samples failed: ' + e.message); }
+}
+async function mySendModel() {
+  if (!myModel) return myLog('there is no model on this page yet: train one first');
+  if (!myConnected()) return myLog('connect the XIAO first');
+  const bytes = packModel(myModel);
+  for (let a = 1; a <= 2; a++) {                              // v007: one automatic second try
+    try {
+      const t0 = Date.now();
+      const reply = await myDo(() => myLink.sendBlob('W', 0, bytes, p => myMsg('sending model ' + myPct(p))), 'OK model', 15000);
+      myModel.unsaved = false;
+      myNoteXfer('model sent', bytes.length, Date.now() - t0, myLink.lastSend ? myLink.lastSend.resends : 0);
+      myLog('model sent. XIAO: ' + reply);
+      return await myRefreshStatus();
+    } catch (e) {
+      if (a === 2 || /refused|aborted|BUSY|ERR/.test(e.message) || !myConnected()) return myLog('sending the model failed: ' + e.message);
+      myLog('sending the model failed (' + e.message + '), trying once more ...'); await mySleep(1500);
+    }
+  }
+}
+async function myGetModel() {
+  if (!myConnected()) return myLog('connect the XIAO first');
+  let why = '';
+  for (let a = 1; a <= 3; a++) {                              // v007: 3 tries
+    try {
+      const b = await myAskBlob('GETMODEL', 'M', null, 20000);
+      if (!b.ok) throw new Error('CRC error');
+      myModel = unpackModel(b.bytes, myD); myModel.source = 'from the XIAO'; myModel.unsaved = false; myModel.normOk = true;
+      myCalib = { mean: myModel.mean.slice(), std: myModel.std.slice(), set: true };
+      myRender(); myAnalyze(); myNoteXfer('model received', b.bytes.length, b.ms, b.nacks);
+      return myLog('got the model from the XIAO (' + b.bytes.length + ' bytes)');
+    } catch (e) {
+      why = e.message; if (/no trained model|layout|package is/.test(why) || !myConnected()) break;
+      if (a < 3) { myLog('getting the model failed (' + why + '), trying again ...'); await myLink.abortIncoming(); await mySleep(800 * a); }
+    }
+  }
+  myLog('getting the model failed: ' + why + ' (the XIAO layout must match this page)');
+}
+async function mySendConfig() {
+  if (!myConnected()) return myLog('connect the XIAO first');
+  try { myLog('XIAO: ' + await myDo(() => myLink.sendBlob('C', 0, new TextEncoder().encode(configJson(myState.classes, myLayout))), 'OK config', 5000)); }
+  catch (e) { myLog('sending config failed: ' + e.message); }
+}
+
+// v006: the samples already on the XIAO's SD card, over BLE or serial (the page had no button for the GET command)
+async function myPullSamples() {
+  if (!myConnected()) return myLog('connect the XIAO first (BLE or Serial)');
+  try { await myAsk('STATUS', 'CAL ', 4000); } catch (e) { return myLog('status failed: ' + e.message); }
+  const x = myState.xiao;
+  if (!x || !x.counts || !x.C) return myLog('the XIAO did not report its sample counts');
+  if (myXiaoDiffers()) return myLog('this page uses another layout or class names than the XIAO: Advanced > Adopt XIAO layout and class names, then try again');
+  const total = x.counts.reduce((a, b) => a + b, 0);
+  if (!total) return myLog('the XIAO has no samples on its SD card');
+  if (myData.some(s => s.onSD || s.onXiao) && !confirm('Samples that came from an SD card or the XIAO are probably the same files and would be duplicated, so they are replaced by this load. Samples not saved anywhere are kept. Continue?')) return;
+  myData = myData.filter(s => !s.onSD && !s.onXiao);
+  let done = 0, bad = 0, streak = 0; const t0 = Date.now();
+  try {
+    for (let c = 0; c < x.counts.length; c++) for (let n = 0; n < x.counts[c]; n++) {
+      myMsg('loading sample ' + (done + 1) + ' of ' + total + ' from the XIAO ...');
+      let got = null, why = '';
+      for (let a = 1; a <= 3 && !got; a++) {                     // v007: each sample gets 3 tries
+        try {
+          const b = await myAskBlob('GET ' + c + ' ' + n, 'S', z => z.id === c, 9000);
+          if (b.ok && b.bytes.length === myD.IN * 4) got = b; else why = 'damaged';
+        } catch (e) { why = e.message; if (!myConnected()) throw e; }
+        if (!got && a < 3) { await myLink.abortIncoming(); await mySleep(400 * a); }
+      }
+      done++;
+      if (!got) { bad++; if (++streak >= 3) throw new Error('3 samples in a row failed (' + why + ')'); continue; }
+      streak = 0; myData.push({ cls: c, win: toFloats(got.bytes), src: 'xiao sd', onSD: false, onXiao: true });
+    }
+    myRender(); myNoteXfer('samples', (done - bad) * myD.IN * 4, Date.now() - t0, bad);
+    myLog('loaded ' + (done - bad) + ' samples from the XIAO' + (bad ? ' (' + bad + ' failed and were skipped: press Load again to retry)' : ''));
+  } catch (e) { myRender(); myLog('loading samples stopped after ' + done + ' of ' + total + ': ' + e.message + ' (the ' + (done - bad) + ' loaded so far are kept)'); }
+}
+// v006: train on the XIAO from the page (the sketch already had the TRAIN command)
+async function myTrainXiao() {
+  if (!myConnected()) return myLog('connect the XIAO first (BLE or Serial)');
+  myHist = []; myLog('XIAO: training started (it reads the samples on its own SD card) ...');
+  try {
+    const r = await myAsk('TRAIN', 'DONE', 30 * 60 * 1000);
+    myLog('XIAO: ' + r + '. Press Get model from XIAO to see it here.');
+    await myRefreshStatus();
+  } catch (e) { myLog('XIAO training failed: ' + e.message); }
+}
+async function myStopXiao() {
+  if (!myConnected()) return myLog('connect the XIAO first');
+  try { await myLink.cmd('STOP'); myLog('stop requested: the XIAO finishes the epoch it is in'); } catch (e) { myLog('could not reach the XIAO: ' + e.message); }
+}
+
+// ---------------------------------------------------------------------------
+// RUN
+// ---------------------------------------------------------------------------
+function myShowResult(probs, who) {
+  const p = Array.from(probs), names = myState.classes;
+  const sfx = who === 'PHONE' ? 'Phone' : '';
+  myEl('myResBanner' + sfx).textContent = who + ' says: ' + names[argmax(p)] + ' (' + myPct(p[argmax(p)]) + ')';
+  myEl('myResBars' + sfx).innerHTML = p.map((v, i) => '<div>' + myEsc(names[i] || i) + ' <progress max="1" value="' + v + '" style="width:200px"></progress> ' + myPct(v) + '</div>').join('');
+}
+async function myToggleRunPhone() {
+  if (myRunningPhone) { myRunningPhone = false; return; }
+  if (!myState.phoneSensor) return myLog('press Enable phone sensor first');
+  if (!myModel) return myLog('there is no model on the phone: train one or get one from the XIAO');
+  myRunningPhone = true; myEl('myBtnRunPhone').value = 'Stop phone';
+  while (myRunningPhone && myModel) {
+    const r = myPhoneWindow(performance.now());
+    if (r.ok) myShowResult(forward(myModel, normalize(r.win, myModel.mean, myModel.std, myD)).probs, 'PHONE');
+    await mySleep(250);
+  }
+  myRunningPhone = false; myEl('myBtnRunPhone').value = 'Run on phone';
+}
+async function myToggleRunXiao() {
+  if (myRunningXiao) { myRunningXiao = false; return; }
+  if (!myConnected()) return myLog('connect the XIAO first');
+  myRunningXiao = true; myEl('myBtnRunXiao').value = 'Stop XIAO';
+  while (myRunningXiao && myConnected() && await myInferOnce()) await mySleep(50);
+  myRunningXiao = false; myEl('myBtnRunXiao').value = 'Run on XIAO';
+}
+async function myInferOnce() {                       // true if it worked
+  const rawWait = myEl('myParity').checked ? myLink.waitBlob('S', 7000, b => b.id === 255) : null;   // the raw window the XIAO used
+  try {
+    const probs = (await myAsk('INFER', 'RES ', 7000)).split(' ').slice(2).map(Number);
+    myShowResult(probs, 'XIAO');
+    if (rawWait) { const b = await rawWait; if (b.ok) await myParity(probs, toFloats(b.bytes)); }
+    return true;
+  } catch (e) {
+    if (rawWait) { myLink.dropWaiters(); try { await rawWait; } catch (x) { /* rejected on purpose */ } }
+    myLog('XIAO inference failed: ' + e.message + (/no trained model/.test(e.message) ? ' (send it a model: step 3)' : ''));
+    return false;
+  }
+}
+// Developer: does this page's network give the same answer as the XIAO for the SAME window?
+async function myParity(devProbs, win) {
+  const out = myEl('myParityText');
+  if (!myModel || !sameLayout(myModel.d, myD) || win.length !== myD.IN) { out.textContent = 'no model with this layout on the page: nothing to compare'; return; }
+  try { await myAsk('STATUS', 'CAL ', 3000); } catch (e) { /* the old calibration is used */ }
+  const pp = forward(myModel, normalize(win, myModel.mean, myModel.std, myD)).probs;
+  let diff = 0; devProbs.forEach((v, i) => { diff = Math.max(diff, Math.abs(v - pp[i])); });
+  let verdict = 'match';
+  if (diff > 0.01) {
+    const c = myState.xiao && myState.xiao.cal, calDiff = c ? Math.max(...c.map((v, i) => Math.abs(v - (i < 3 ? myModel.mean[i] : myModel.std[i - 3])))) : NaN;
+    verdict = calDiff > 1e-3 ? 'INPUTS differ: the XIAO calibration is not the model calibration (send the model again)' : 'same window and calibration, so the WEIGHTS differ: the XIAO has another model';
+  }
+  out.textContent = 'XIAO against this page for the same window: largest probability difference ' + diff.toFixed(4) + ' - ' + verdict;
+}
+
+// ---------------------------------------------------------------------------
+// START
+// ---------------------------------------------------------------------------
+['myMapX', 'myMapY', 'myMapZ'].forEach((id, i) => {
+  myEl(id).innerHTML = ['x', '-x', 'y', '-y', 'z', '-z'].map(o => '<option>' + o + '</option>').join('');
+  myEl(id).value = (myIsIOS() ? '-' : '') + 'xyz'[i];
+});
+window.onbeforeunload = e => { if ((myModel && myModel.unsaved) || myData.some(x => !x.onSD && !x.onXiao)) { e.preventDefault(); e.returnValue = ''; } };
+setInterval(myLiveTick, 150);
+setInterval(myTick, 5000);
+myShow('Sd');
+if (!window.showDirectoryPicker) myLog('This browser can read an SD folder but cannot write to it: Save gives an SD-ready ZIP. Desktop Chrome or Edge can write to the card.');
+</script>
+</body>
+</html>
